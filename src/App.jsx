@@ -673,6 +673,41 @@ export default function App() {
     return L.join("\n");
   };
 
+  // ─── UNIVERSAL SYNC ─────────────────────────────────────────────────────
+  // Merges one stock block (quant fields + catalyst + G/H/I quals) into a stocks array.
+  // capturePrev freezes prevPrice/prevScore/prevScores before applying — the weekly cycle marker.
+  const applyStockBlock = (stocksArr, obj, capturePrev) => {
+    const idx = stocksArr.findIndex(s => s.ticker === obj.ticker);
+    const added = idx < 0;
+    let next = added
+      ? { ticker: obj.ticker, name: obj.name || obj.ticker, sector: obj.sector || "", held: false, entryPrice: null,
+          picpot: Array(6).fill(null), moat: Array(6).fill(null), mgmt: Array(5).fill(null),
+          qualRationale: {}, overrideScores: {}, notebook: [], overrides: [], decisions: [] }
+      : { ...stocksArr[idx] };
+    if (capturePrev && !added) {
+      const exCalc = computeStock(stocksArr[idx], rules);
+      next.prevPrice = stocksArr[idx].price ?? null; next.prevScore = exCalc.composite; next.prevScores = exCalc.scores;
+    }
+    if (obj.fields && typeof obj.fields === "object") next = applyQuant(next, obj);
+    if (obj.catalyst === null) { next.catalystType = null; next.catalystDate = null; next.catalystConfidence = null; }
+    else if (obj.catalyst && typeof obj.catalyst === "object") {
+      if (obj.catalyst.type != null) next.catalystType = obj.catalyst.type;
+      if (obj.catalyst.date != null) next.catalystDate = obj.catalyst.date;
+      if (obj.catalyst.confidence != null) next.catalystConfidence = obj.catalyst.confidence;
+    }
+    ["G", "H", "I"].forEach(cl => {
+      if (Array.isArray(obj[cl])) {
+        const arrKey = cl === "G" ? "picpot" : cl === "H" ? "moat" : "mgmt";
+        const arr = [...(next[arrKey] || Array(cl === "I" ? 5 : 6).fill(null))];
+        const qr = { ...(next.qualRationale || {}) }; qr[cl] = { ...(qr[cl] || {}) };
+        obj[cl].forEach((comp, i) => { if (comp && comp.score != null) arr[i] = comp.score; if (comp) qr[cl][i] = { text: comp.rationale || qr[cl][i]?.text || "", sources: comp.sources || qr[cl][i]?.sources || [] }; });
+        next[arrKey] = arr; next.qualRationale = qr;
+      }
+    });
+    const stocks = added ? [...stocksArr, next] : stocksArr.map((s, i) => (i === idx ? next : s));
+    return { stocks, added };
+  };
+
   const applySync = async () => {
     setSyncError("");
     try {
@@ -681,24 +716,53 @@ export default function App() {
       let obj;
       try { obj = JSON.parse(syncText.slice(start, end + 1)); }
       catch (e) { setSyncError("JSON didn't parse: " + e.message + ". Make sure you copied the whole block."); return; }
-      if (!obj.ticker) { setSyncError('Missing "ticker" field in the JSON.'); return; }
-      if (!data.stocks.find(s => s.ticker === obj.ticker)) { setSyncError(`Ticker ${obj.ticker} isn't in your list.`); return; }
-      const stocks = data.stocks.map(s => {
-        if (s.ticker !== obj.ticker) return s;
-        const next = { ...s };
-        ["G", "H", "I"].forEach(cl => {
-          if (Array.isArray(obj[cl])) {
-            const arrKey = cl === "G" ? "picpot" : cl === "H" ? "moat" : "mgmt";
-            const arr = [...(next[arrKey] || Array(cl === "I" ? 5 : 6).fill(null))];
-            const qr = { ...(next.qualRationale || {}) }; qr[cl] = { ...(qr[cl] || {}) };
-            obj[cl].forEach((comp, i) => { if (comp && comp.score != null) arr[i] = comp.score; if (comp) qr[cl][i] = { text: comp.rationale || qr[cl][i]?.text || "", sources: comp.sources || qr[cl][i]?.sources || [] }; });
-            next[arrKey] = arr; next.qualRationale = qr;
-          }
-        });
-        return next;
-      });
-      await persist({ ...data, stocks });
-      setSyncModal(false); setSyncText(""); setSyncError("");
+
+      // ── WEEKLY UPDATE: macro + sectors + headlines + all stocks in one block ──
+      if (obj.type === "weekly_update") {
+        const report = [];
+        let d = { ...data };
+        if (obj.macro && typeof obj.macro === "object") {
+          const m = { ...d.macro }; let n = 0;
+          ["cape", "vix", "fearGreed", "buffett", "yield10", "marginDebt"].forEach(k => { if (obj.macro[k] != null) { m[k] = obj.macro[k]; n++; } });
+          if (n) { d.macro = m; report.push(`macro ${n}/6`); }
+        }
+        if (Array.isArray(obj.sectors)) {
+          const sectors = [...(d.sectors || [])]; let upd = 0, addS = 0;
+          obj.sectors.forEach(sec => {
+            if (!sec || !sec.name) return;
+            const i = sectors.findIndex(x => (x.name || "").toLowerCase() === sec.name.toLowerCase());
+            if (i >= 0) { sectors[i] = { ...sectors[i], ...(sec.etf ? { etf: sec.etf } : {}), ...(sec.change != null ? { change: sec.change } : {}) }; upd++; }
+            else { sectors.push({ name: sec.name, etf: sec.etf || "", change: sec.change ?? null }); addS++; }
+          });
+          d.sectors = sectors; report.push(`sectors ${upd}${addS ? `+${addS} new` : ""}`);
+        }
+        if (Array.isArray(obj.headlines)) {
+          d.headlines = obj.headlines.filter(h => h && h.headline);
+          d.headlinesDate = obj.date || new Date().toISOString().slice(0, 10);
+          report.push(`${d.headlines.length} headlines`);
+        }
+        if (Array.isArray(obj.stocks)) {
+          let stocks = [...d.stocks]; let upd = 0; const addedT = [];
+          obj.stocks.forEach(sb => {
+            if (!sb || !sb.ticker) return;
+            const res = applyStockBlock(stocks, sb, true);
+            stocks = res.stocks; if (res.added) addedT.push(sb.ticker); else upd++;
+          });
+          d.stocks = stocks; report.push(`${upd} stocks updated${addedT.length ? `, added ${addedT.join(", ")}` : ""}`);
+        }
+        await persist(d);
+        setSyncModal(false); setSyncText("");
+        setFetchMsg(`Weekly update applied — ${report.join(" · ") || "nothing recognized in the block"}`);
+        return;
+      }
+
+      // ── SINGLE STOCK: stock_update, or a legacy qual-only block ──
+      if (!obj.ticker) { setSyncError('Missing "ticker" field in the JSON (and no "type":"weekly_update" found).'); return; }
+      const res = applyStockBlock(data.stocks, obj, obj.type === "stock_update");
+      await persist({ ...data, stocks: res.stocks });
+      setSyncModal(false); setSyncText("");
+      setFetchMsg(res.added ? `${obj.ticker} added to the board from Claude's block.` : `${obj.ticker} updated from Claude's block.`);
+      if (res.added) openDesk(obj.ticker);
     } catch (e) { setSyncError("Unexpected error: " + e.message); }
   };
 
@@ -794,6 +858,7 @@ export default function App() {
         <div style={{ flex: 1 }} />
         <button onClick={exportAll} title="Download a full backup of everything" style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬇ Export</button>
         <button onClick={() => document.getElementById("importFileInput")?.click()} title="Restore from a backup file" style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬆ Import</button>
+        <button onClick={() => { setSyncModal(true); setSyncError(""); }} title="Paste a JSON block from Claude" style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.blue}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬇ Sync</button>
         <input id="importFileInput" type="file" accept=".json,application/json" style={{ display: "none" }} onChange={e => { importAll(e.target.files && e.target.files[0]); e.target.value = ""; }} />
         <button onClick={snapshotToJournal} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>📸 Snapshot week</button>
         <button onClick={() => { setShowAdd(true); setFetchMsg(""); }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "7px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>＋ Add ticker</button>
@@ -849,13 +914,13 @@ export default function App() {
       {syncModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 14, padding: 24, width: "min(720px, 94vw)" }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Sync Claude's scores</div>
-            <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>Paste the JSON block Claude returns after you discuss a position. Shape: <code style={{ color: COLORS.blue }}>{`{"ticker":"ATYR","G":[{"score":2,"rationale":"…","sources":["…"]}],"H":[…],"I":[…]}`}</code> — 1=Low, 2=Medium, 3=High. Only included components update.</div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Sync from Claude</div>
+            <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>Paste any JSON block Claude returns — a <code style={{ color: COLORS.blue }}>weekly_update</code> (whole board: macro, headlines, sectors, every ticker), a <code style={{ color: COLORS.blue }}>stock_update</code> (one stock, quant + catalyst + quals; new tickers get added), or an old qual-only block. The app detects which it is and merges. Manual values survive: only fields present in the block are overwritten.</div>
             <textarea value={syncText} onChange={e => { setSyncText(e.target.value); setSyncError(""); }} placeholder='{"ticker":"ATYR","G":[...],"H":[...],"I":[...]}' style={{ ...inp, height: 200, fontSize: 11, fontFamily: "monospace" }} />
             {syncError && <div style={{ color: COLORS.red, fontSize: 12, marginTop: 8 }}>⚠️ {syncError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
               <button onClick={() => { setSyncModal(false); setSyncText(""); setSyncError(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 16px", cursor: "pointer" }}>Cancel</button>
-              <button onClick={applySync} style={{ background: COLORS.blue, color: "#0E1420", border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>Load scores</button>
+              <button onClick={applySync} style={{ background: COLORS.blue, color: "#0E1420", border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>Apply block</button>
             </div>
           </div>
         </div>
