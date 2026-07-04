@@ -702,6 +702,41 @@ export default function App() {
     } catch (e) { setSyncError("Unexpected error: " + e.message); }
   };
 
+  // ─── BACKUP: full-state export / import ───────────────────────────────
+  const exportAll = () => {
+    const payload = { app: "the-screener", backupVersion: 1, exportDate: new Date().toISOString(), data };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `screener-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    setFetchMsg("Backup downloaded. Keep it somewhere safe (Files, iCloud).");
+  };
+
+  const importAll = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const payload = JSON.parse(ev.target.result);
+        const d = payload && payload.app === "the-screener" && payload.data ? payload.data : payload;
+        if (!d || !Array.isArray(d.stocks)) { setFetchMsg("Import failed: this file doesn't look like a Screener backup (no stocks array)."); return; }
+        const when = payload.exportDate ? new Date(payload.exportDate).toISOString().slice(0, 10) : "unknown date";
+        const ok = window.confirm(`Restore backup from ${when}?\n\nThis REPLACES everything currently in the app (${data.stocks.length} stocks now vs ${d.stocks.length} in the backup). This cannot be undone.\n\nTip: export a backup of the current state first if unsure.`);
+        if (!ok) { setFetchMsg("Import cancelled. Nothing changed."); return; }
+        await persist(d);
+        setFetchMsg(`Backup from ${when} restored: ${d.stocks.length} stocks, ${(d.journal || []).length} journal entries.`);
+      } catch (e) {
+        setFetchMsg("Import failed: couldn't read that file as JSON. " + e.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const copyText = (text) => {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -757,6 +792,9 @@ export default function App() {
             style={{ background: room === r ? COLORS.panelLight : "transparent", color: room === r ? COLORS.gold : COLORS.dim, border: `1px solid ${room === r ? COLORS.gold : "transparent"}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{lbl}</button>
         ))}
         <div style={{ flex: 1 }} />
+        <button onClick={exportAll} title="Download a full backup of everything" style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬇ Export</button>
+        <button onClick={() => document.getElementById("importFileInput")?.click()} title="Restore from a backup file" style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬆ Import</button>
+        <input id="importFileInput" type="file" accept=".json,application/json" style={{ display: "none" }} onChange={e => { importAll(e.target.files && e.target.files[0]); e.target.value = ""; }} />
         <button onClick={snapshotToJournal} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>📸 Snapshot week</button>
         <button onClick={() => { setShowAdd(true); setFetchMsg(""); }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "7px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>＋ Add ticker</button>
       </div>
