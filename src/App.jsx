@@ -319,16 +319,58 @@ export default function App() {
   const [sectorEdit, setSectorEdit] = useState(false);
   const [copyMsg, setCopyMsg] = useState("");
 
+  // ─── CLOUD SYNC ───────────────────────────────────────────────────────────
+  // localStorage is the instant cache; Vercel Blob (via /api/state) is the truth
+  // shared across devices. Last write wins by updatedAt. The sync key lives only
+  // in this browser and gates the API.
+  const [syncKey, setSyncKeyState] = useState(() => { try { return localStorage.getItem("screener-sync-key") || ""; } catch { return ""; } });
+  const [syncStatus, setSyncStatus] = useState(syncKey ? "idle" : "off");
+  const pushTimer = useRef(null);
+  const setSyncKey = k => {
+    const v = (k || "").trim();
+    try { v ? localStorage.setItem("screener-sync-key", v) : localStorage.removeItem("screener-sync-key"); } catch {}
+    setSyncKeyState(v); setSyncStatus(v ? "idle" : "off");
+  };
+  const cloudPush = useCallback((d, key) => {
+    if (!key) return;
+    clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(async () => {
+      try {
+        setSyncStatus("saving");
+        const r = await fetch("/api/state", { method: "PUT", headers: { "Content-Type": "application/json", "x-sync-key": key }, body: JSON.stringify(d) });
+        setSyncStatus(r.ok ? "synced" : "error");
+      } catch { setSyncStatus("error"); }
+    }, 1200);
+  }, []);
   useEffect(() => {
+    let local = null;
     try {
       const r = localStorage.getItem("screener-data-v3");
-      if (r) setData(JSON.parse(r));
+      if (r) { local = JSON.parse(r); setData(local); }
     } catch (e) { console.error("load failed", e); }
+    if (!syncKey) return;
+    (async () => {
+      try {
+        setSyncStatus("loading");
+        const r = await fetch("/api/state", { headers: { "x-sync-key": syncKey } });
+        if (r.status === 404) { if (local) cloudPush(local, syncKey); setSyncStatus("synced"); return; }
+        if (r.status === 401) { setSyncStatus("badkey"); return; }
+        if (!r.ok) { setSyncStatus("error"); return; }
+        const cloud = await r.json();
+        if (cloud && (!local || (cloud.updatedAt || 0) >= (local.updatedAt || 0))) {
+          setData(cloud);
+          try { localStorage.setItem("screener-data-v3", JSON.stringify(cloud)); } catch {}
+        } else if (local) cloudPush(local, syncKey);
+        setSyncStatus("synced");
+      } catch { setSyncStatus("error"); }
+    })();
   }, []);
   const persist = useCallback(d => {
-    setData(d);
-    try { localStorage.setItem("screener-data-v3", JSON.stringify(d)); } catch (e) { console.error("save failed", e); }
-  }, []);
+    const stamped = { ...d, updatedAt: Date.now() };
+    setData(stamped);
+    try { localStorage.setItem("screener-data-v3", JSON.stringify(stamped)); } catch (e) { console.error("save failed", e); }
+    cloudPush(stamped, syncKey);
+  }, [syncKey, cloudPush]);
 
   const macro = computeMacro(data.macro, rules);
   const computed = data.stocks.map(s => ({ ...s, calc: computeStock(s, rules) }));
@@ -908,7 +950,10 @@ export default function App() {
           ))}
           <div style={{ flex: 1 }} />
           <div style={{ fontSize: 11, color: COLORS.dim, padding: "0 12px", lineHeight: 1.7 }}>
-            {data.stocks.length} on the board<br />{positions.length} held{data.portfolio ? ` · imported ${data.portfolio.date.slice(5)}` : ""}
+            {data.stocks.length} on the board<br />{positions.length} held{data.portfolio ? ` · imported ${data.portfolio.date.slice(5)}` : ""}<br />
+            <span style={{ color: syncStatus === "synced" ? COLORS.green : syncStatus === "error" || syncStatus === "badkey" ? COLORS.red : COLORS.dim }}>
+              ● cloud {syncStatus === "off" ? "sync off" : syncStatus === "badkey" ? "bad key" : syncStatus}
+            </span>
           </div>
         </aside>
       )}
@@ -1590,6 +1635,16 @@ export default function App() {
       {room === "config" && (
         <div className="room" style={{ padding: "26px 28px 48px", maxWidth: 720, margin: "0 auto" }}>
           <PageHeader title="Config" sub="Rules, calibration, and data safety" />
+
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginBottom: 14 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>☁️ Cloud sync</div>
+            <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12, lineHeight: 1.55 }}>One sync key, same data on every device — no more export/import between browsers. Set the same key you configured as SYNC_KEY in Vercel. Clear the field to go local-only. Status: <b style={{ color: syncStatus === "synced" ? COLORS.green : syncStatus === "error" || syncStatus === "badkey" ? COLORS.red : COLORS.text }}>{syncStatus === "off" ? "sync off" : syncStatus === "badkey" ? "wrong key (server rejected it)" : syncStatus}</b></div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <input type="password" placeholder="Sync key" defaultValue={syncKey} id="syncKeyInput" style={{ ...inp, marginTop: 0, maxWidth: 280, padding: 9 }} />
+              <button onClick={() => { setSyncKey(document.getElementById("syncKeyInput").value); setTimeout(() => window.location.reload(), 150); }} style={{ background: COLORS.blue, color: "#0F1424", border: "none", borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>Save & reconnect</button>
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 10 }}>The key is stored only in this browser. Data syncs to your project's Vercel Blob store; the newest save wins across devices.</div>
+          </div>
 
           <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginBottom: 14 }}>
             <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>💾 Backup & restore</div>
