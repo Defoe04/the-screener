@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Gauge, LayoutList, Briefcase, Settings, Zap, X, Upload, Download, MessageSquare, ClipboardPaste, Radar, TrendingUp, TrendingDown } from "lucide-react";
 
 // ─── RULES ENGINE ───────────────────────────────────────────────────────────
 const DEFAULT_RULES = {
@@ -22,11 +23,11 @@ const MACRO_LINKS = {
 };
 const etfLink = etf => `https://finance.yahoo.com/quote/${encodeURIComponent(etf)}/`;
 const CLUSTER_SOURCES = {
-  A: "Refinitiv: TR.PriceToBookRatio, TR.PERatio", B: "Refinitiv: TR.PriceClose, TR.ADTV, TR.CompanyMarketCap",
-  C: "Refinitiv: TR.TotalDebt, TR.CashAndSTInvestments, TR.NetCashFromOperatingActivities", D: "Refinitiv: TR.NumberOfAnalysts, TR.TargetPrice",
-  E: "Refinitiv: TR.InsiderNetSharesPurchased12M, TR.InsiderPurchasesValue12M", F: "Refinitiv: TR.PriceLow52Week, TR.PriceChangePct1Y",
-  G: "Web research (Claude first pass) + your edits", H: "Web research (Claude first pass) + your edits",
-  I: "Earnings call transcript + web research (Claude first pass) + your edits", J: "Refinitiv + manual catalyst entry + your edits",
+  A: "Skill scan (tier rules in the skill) + your override", B: "Skill scan + your override",
+  C: "Skill scan + your override", D: "Skill scan + your override",
+  E: "Skill scan + your override", F: "Skill scan + your override",
+  G: "Skill scan items + your edits/override", H: "Skill scan items + your edits/override",
+  I: "Earnings call via skill scan + your edits/override", J: "Skill scan + manual catalyst entry + your override",
 };
 const QUAL_LABELS = {
   G: ["Proximity", "Impact", "Conflict", "Prominence", "Oddity", "Timeliness"],
@@ -34,196 +35,19 @@ const QUAL_LABELS = {
   I: ["Unscripted tone", "Q&A directness", "Guidance clarity", "Low evasiveness", "CEO conviction"],
 };
 
-function tierPB(p) {
-  if (p == null) return { score: 5, tier: "N/A — no peer data", rule: "P/B N/A → neutral 5" };
-  if (p < -50) return { score: 9.5, tier: "50%+ discount to peers", rule: "P/B < -50% → 9.5" };
-  if (p < -20) return { score: 7, tier: "20-50% discount", rule: "P/B -50..-20% → 7" };
-  if (p < 20) return { score: 4.5, tier: "In line with peers", rule: "P/B ±20% → 4.5" };
-  if (p < 50) return { score: 2.5, tier: "20-50% premium", rule: "P/B +20..50% → 2.5" };
-  return { score: 0.5, tier: "50%+ premium", rule: "P/B > +50% → 0.5" };
-}
-function tierPE(pe, ind) {
-  if (pe == null) return { score: 5, tier: "N/A — pre-revenue", rule: "P/E N/A → neutral 5" };
-  if (pe < 0) return { score: 2, tier: "Negative earnings", rule: "P/E < 0 → 2 (flip timing in Cluster J)" };
-  if (ind == null) return { score: 5, tier: "No industry comparison", rule: "No industry P/E → neutral 5" };
-  const r = pe / ind;
-  if (r < 0.5) return { score: 9.5, tier: "P/E < 50% of industry", rule: "ratio < 0.5 → 9.5" };
-  if (r < 1) return { score: 7, tier: "Below industry avg", rule: "ratio < 1 → 7" };
-  if (r < 1.5) return { score: 5, tier: "Slightly above industry", rule: "ratio < 1.5 → 5" };
-  if (r < 2) return { score: 3, tier: "Well above industry", rule: "ratio < 2 → 3" };
-  return { score: 1.5, tier: "2x+ industry avg", rule: "ratio ≥ 2 → 1.5" };
-}
-function tierPrice(p) {
-  if (p == null) return { score: null, tier: "No price", rule: "—" };
-  if (p < 1) return { score: "KO", tier: "Below $1 — Penny Stock Hell", rule: "Hard veto unless 2yr runway + 30d catalyst" };
-  if (p <= 2) return { score: 9.5, tier: "$1-2 sweet spot", rule: "$1-2 → 9.5" };
-  if (p <= 3) return { score: 7.5, tier: "$2-3", rule: "$2-3 → 7.5" };
-  if (p <= 5) return { score: 5.5, tier: "$3-5", rule: "$3-5 → 5.5" };
-  if (p <= 10) return { score: 3.5, tier: "$5-10 — above target range", rule: "$5-10 → 3.5" };
-  return { score: 1.5, tier: "Above $10", rule: ">$10 → 1.5" };
-}
-function tierVol(v, r) {
-  if (v == null) return { score: null, tier: "No volume data", rule: "—" };
-  if (v < r.volHardVeto) return { score: "KO", tier: "Below 100k — illiquid", rule: `Hard Veto: vol < ${r.volHardVeto.toLocaleString()}` };
-  if (v < r.volSoft) return { score: 3, tier: "100k-500k — thin", rule: "Soft floor → 3" };
-  if (v < 1e6) return { score: 5.5, tier: "500k-1M", rule: "→ 5.5" };
-  if (v < 2e6) return { score: 7.5, tier: "1M-2M", rule: "→ 7.5" };
-  return { score: 9.5, tier: "2M+ — highly liquid", rule: "→ 9.5" };
-}
-function tierMktCap(m, r) {
-  if (m == null) return { score: null, tier: "No mkt cap", rule: "—" };
-  if (m < r.mktCapFloor) return { score: "KO", tier: `Below $${r.mktCapFloor}M floor`, rule: `Hard Veto: cap < $${r.mktCapFloor}M` };
-  if (m < 500) return { score: 3.5, tier: "$300-500M", rule: "→ 3.5" };
-  if (m < 1000) return { score: 5.5, tier: "$500M-1B", rule: "→ 5.5" };
-  if (m < 2000) return { score: 7.5, tier: "$1-2B", rule: "→ 7.5" };
-  return { score: 9.5, tier: "$2B+", rule: "→ 9.5" };
-}
-function tierDebtCash(d, c) {
-  if (d == null || c == null) return { score: 5, tier: "N/A", rule: "Missing data → neutral 5" };
-  if (c === 0) return { score: 0, tier: "No cash", rule: "Cash = 0 → 0" };
-  const r = d / c;
-  if (r === 0) return { score: 10, tier: "Zero debt — cannot go bankrupt", rule: "debt=0 → 10" };
-  if (r < 0.1) return { score: 8.5, tier: "Debt < 10% of cash", rule: "→ 8.5" };
-  if (r < 0.25) return { score: 6.5, tier: "Debt 10-25% of cash", rule: "→ 6.5" };
-  if (r < 0.5) return { score: 4.5, tier: "Debt 25-50% of cash", rule: "→ 4.5" };
-  if (r < 1) return { score: 2.5, tier: "Debt 50-100% of cash", rule: "→ 2.5" };
-  return { score: 1, tier: "Debt exceeds cash", rule: "→ 1" };
-}
-function tierRunway(cash, burnQ, r) {
-  if (cash == null || burnQ == null) return { score: 3, tier: "N/A — uncertain", rule: "Missing → 3" };
-  if (burnQ >= 0) return { score: 9.5, tier: "Cash flow positive", rule: "Profitable → 9.5" };
-  const yrs = cash / Math.abs(burnQ) * 0.25;
-  if (yrs < r.runwayVeto) return { score: "KO", tier: `${yrs.toFixed(1)}y — below 6 months`, rule: "Hard Veto: runway < 0.5y", years: yrs };
-  if (yrs >= 4) return { score: 9.5, tier: `${yrs.toFixed(1)}y runway`, rule: "4y+ → 9.5", years: yrs };
-  if (yrs >= 3) return { score: 7.5, tier: `${yrs.toFixed(1)}y runway`, rule: "3-4y → 7.5", years: yrs };
-  if (yrs >= 2) return { score: 5.5, tier: `${yrs.toFixed(1)}y runway`, rule: "2-3y → 5.5", years: yrs };
-  if (yrs >= 1) return { score: 3, tier: `${yrs.toFixed(1)}y — below 2y minimum`, rule: "1-2y → 3 (heavy negative)", years: yrs };
-  return { score: 1, tier: `${yrs.toFixed(1)}y — critical`, rule: "0.5-1y → 1", years: yrs };
-}
-function tierAnalysts(n, r) {
-  if (n == null) return { score: 3, tier: "Unknown", rule: "Missing → 3" };
-  if (n < 1) return { score: 0, tier: "No coverage", rule: "→ 0" };
-  if (n < 2) return { score: 1.5, tier: "1 analyst", rule: "→ 1.5" };
-  if (n < r.minAnalysts) return { score: 3, tier: `${n} — below min ${r.minAnalysts}`, rule: "→ 3" };
-  if (n < 7) return { score: 5.5, tier: `${n} analysts`, rule: "4-6 → 5.5" };
-  if (n < 10) return { score: 7.5, tier: `${n} analysts`, rule: "7-9 → 7.5" };
-  return { score: 9.5, tier: `${n} analysts — heavy coverage`, rule: "10+ → 9.5" };
-}
-function tierUpside(t, p) {
-  if (t == null || p == null || p === 0) return { score: 5, tier: "N/A", rule: "Missing → 5" };
-  const u = (t - p) / p * 100;
-  if (u < 0) return { score: 0, tier: `${u.toFixed(0)}% — downside consensus`, rule: "→ 0 (headwind)" };
-  if (u < 50) return { score: 1.5, tier: `+${u.toFixed(0)}% — minimal tailwind`, rule: "→ 1.5" };
-  if (u < 100) return { score: 3.5, tier: `+${u.toFixed(0)}% — slight tailwind`, rule: "→ 3.5" };
-  if (u < 200) return { score: 5.5, tier: `+${u.toFixed(0)}% — moderate`, rule: "→ 5.5" };
-  if (u < 500) return { score: 7.5, tier: `+${u.toFixed(0)}% — strong tailwind`, rule: "→ 7.5" };
-  return { score: 9.5, tier: `+${u.toFixed(0)}% — exceptional`, rule: "→ 9.5" };
-}
-function tierInsiderNet(n) {
-  if (n == null) return { score: 4, tier: "No data", rule: "→ 4 neutral" };
-  if (n < -50000) return { score: "KO", tier: "Heavy net selling", rule: "Hard Veto: sustained insider selling" };
-  if (n > 50000) return { score: 9.5, tier: "Strong net buying", rule: "→ 9.5" };
-  if (n > 10000) return { score: 7.5, tier: "Moderate net buying", rule: "→ 7.5" };
-  if (n > 0) return { score: 5.5, tier: "Slight net buying", rule: "→ 5.5" };
-  if (n === 0) return { score: 4, tier: "No activity", rule: "→ 4" };
-  if (n > -10000) return { score: 2.5, tier: "Slight net selling", rule: "→ 2.5" };
-  return { score: 1, tier: "Net selling", rule: "→ 1" };
-}
-function tierInsiderFloor(b, p) {
-  if (b == null || p == null || b === 0) return { score: 3, tier: "No significant insider buy", rule: "→ 3" };
-  const r = p / b;
-  if (r < 0.8) return { score: 9.5, tier: `20%+ below insider buy $${b}`, rule: "→ 9.5" };
-  if (r < 1) return { score: 7.5, tier: `Below insider buy $${b}`, rule: "→ 7.5" };
-  if (r === 1) return { score: 5.5, tier: "At insider buy level", rule: "→ 5.5" };
-  if (r < 1.2) return { score: 3.5, tier: "0-20% above insider buy", rule: "→ 3.5" };
-  return { score: 1.5, tier: `20%+ above insider buy $${b}`, rule: "→ 1.5" };
-}
-function tier52w(p, l) {
-  if (p == null || l == null || l === 0) return { score: 5, tier: "N/A", rule: "→ 5" };
-  const d = (p - l) / l * 100;
-  if (d < 5) return { score: 9.5, tier: `${d.toFixed(0)}% above 52w low`, rule: "<5% → 9.5" };
-  if (d < 15) return { score: 7.5, tier: `${d.toFixed(0)}% above low`, rule: "5-15% → 7.5" };
-  if (d < 30) return { score: 5.5, tier: `${d.toFixed(0)}% above low`, rule: "15-30% → 5.5" };
-  if (d < 50) return { score: 3.5, tier: `${d.toFixed(0)}% above low`, rule: "30-50% → 3.5" };
-  return { score: 1.5, tier: `${d.toFixed(0)}% above low`, rule: "50%+ → 1.5" };
-}
-function tierYTD(y) {
-  if (y == null) return { score: 5, tier: "N/A", rule: "→ 5" };
-  if (y < -75) return { score: 9.5, tier: `${y.toFixed(0)}% — max dislocation`, rule: "→ 9.5" };
-  if (y < -50) return { score: 7.5, tier: `${y.toFixed(0)}% YTD`, rule: "→ 7.5" };
-  if (y < -25) return { score: 5.5, tier: `${y.toFixed(0)}% YTD`, rule: "→ 5.5" };
-  if (y < 0) return { score: 3.5, tier: `${y.toFixed(0)}% YTD`, rule: "→ 3.5" };
-  return { score: 1.5, tier: `+${y.toFixed(0)}% YTD`, rule: "→ 1.5" };
-}
 const qualToScore = v => (v === 3 ? 9.5 : v === 2 ? 5 : v === 1 ? 1.5 : null);
-function tierCatalystDays(d) {
-  if (d == null) return { score: 0, tier: "No catalyst identified", rule: "→ 0 (heavy negative)" };
-  if (d <= 7) return { score: 9.5, tier: `${d}d — imminent`, rule: "≤7d → 9.5" };
-  if (d <= 15) return { score: 7.5, tier: `${d}d away`, rule: "8-15d → 7.5" };
-  if (d <= 30) return { score: 5.5, tier: `${d}d away`, rule: "16-30d → 5.5" };
-  if (d <= 60) return { score: 3.5, tier: `${d}d — beyond window`, rule: "31-60d → 3.5" };
-  if (d <= 90) return { score: 1.5, tier: `${d}d — distant`, rule: "61-90d → 1.5" };
-  return { score: 0, tier: `${d}d — too far`, rule: ">90d → 0" };
-}
-function tierConfidence(c) {
-  if (c === "High") return { score: 9.5, tier: "High confidence", rule: "→ 9.5" };
-  if (c === "Medium") return { score: 5.5, tier: "Medium confidence", rule: "→ 5.5" };
-  if (c === "Low") return { score: 2, tier: "Low confidence", rule: "→ 2" };
-  return { score: 0.5, tier: "Unconfirmed", rule: "→ 0.5" };
-}
-
+// ─── SCORING ────────────────────────────────────────────────────────────────
+// The scoring brain lives in the Claude Skill — the app runs NO tier math and
+// NO veto logic of its own. Cluster scores come from the last scan (claudeScan);
+// G/H/I recompute live from the (editable) qual items; your overrides beat
+// everything. The only arithmetic left here: the weighted average and the
+// decision bands, both driven by config.
 function computeStock(s, rules) {
-  const trace = {};
-  const pbVs = s.pb != null && s.peerPB != null ? (s.pb - s.peerPB) / s.peerPB * 100 : null;
-  const a1 = tierPB(pbVs), a2 = tierPE(s.pe, s.indPE);
-  trace.A = { components: [
-    { name: "P/B vs peers", input: pbVs != null ? `${pbVs.toFixed(0)}% (P/B ${s.pb} vs peer ${s.peerPB})` : "N/A", ...a1, weight: 0.5 },
-    { name: "P/E trajectory", input: s.pe != null ? `P/E ${s.pe}${s.indPE ? ` vs industry ${s.indPE}` : ""}` : "Pre-revenue", ...a2, weight: 0.5 },
-  ]};
-  const scoreA = a1.score * 0.5 + a2.score * 0.5;
+  const cs = s.claudeScan || null;
+  const cScores = (cs && cs.clusters) || {};
 
-  const b1 = tierPrice(s.price), b2 = tierVol(s.volume, rules), b3 = tierMktCap(s.mktCap, rules);
-  trace.B = { components: [
-    { name: "Price range", input: s.price != null ? `$${s.price}` : "—", ...b1, weight: 0.333 },
-    { name: "Daily volume", input: s.volume != null ? s.volume.toLocaleString() : "—", ...b2, weight: 0.333 },
-    { name: "Market cap", input: s.mktCap != null ? `$${s.mktCap}M` : "—", ...b3, weight: 0.333 },
-  ]};
-  const koB = [b1, b2, b3].some(x => x.score === "KO");
-  const scoreB = koB ? null : ((b1.score ?? 5) + (b2.score ?? 5) + (b3.score ?? 5)) / 3;
-
-  const c1 = tierDebtCash(s.debt, s.cash), c2 = tierRunway(s.cash, s.burnQ, rules);
-  const belowCash = s.cash != null && s.sharesOut != null && s.price != null && s.price < s.cash / s.sharesOut;
-  trace.C = { components: [
-    { name: "Debt/Cash", input: s.debt != null && s.cash != null ? `$${s.debt}M / $${s.cash}M = ${s.cash ? (s.debt / s.cash).toFixed(2) : "—"}` : "—", ...c1, weight: 0.5 },
-    { name: "Cash runway", input: s.cash != null && s.burnQ != null ? `$${s.cash}M cash, $${Math.abs(s.burnQ)}M/qtr burn` : "—", ...c2, weight: 0.5 },
-    ...(belowCash ? [{ name: "💎 Below cash/share", input: `Price $${s.price} < cash/share $${(s.cash / s.sharesOut).toFixed(2)}`, score: "+1", tier: "Trading below cash pile", rule: "Bonus +1 (capped at 10)", weight: 0 }] : []),
-  ]};
-  const koC = c2.score === "KO";
-  const scoreC = koC ? null : Math.min(10, c1.score * 0.5 + c2.score * 0.5 + (belowCash ? 1 : 0));
-  const runwayYears = c2.years;
-
-  const d1 = tierAnalysts(s.analysts, rules), d2 = tierUpside(s.target, s.price);
-  trace.D = { components: [
-    { name: "Analyst count", input: s.analysts ?? "—", ...d1, weight: 0.5 },
-    { name: "Consensus upside", input: s.target != null ? `Target $${s.target} vs $${s.price}` : "—", ...d2, weight: 0.5 },
-  ]};
-  const scoreD = d1.score * 0.5 + d2.score * 0.5;
-
-  const e1 = tierInsiderNet(s.insiderNet), e2 = tierInsiderFloor(s.insiderBuyPrice, s.price);
-  trace.E = { components: [
-    { name: "Net insider 12M", input: s.insiderNet != null ? `${s.insiderNet > 0 ? "+" : ""}${s.insiderNet.toLocaleString()} shares` : "—", ...e1, weight: 0.5 },
-    { name: "Insider price floor", input: s.insiderBuyPrice != null ? `Largest buy @ $${s.insiderBuyPrice}` : "None on record", ...e2, weight: 0.5 },
-  ]};
-  const koE = e1.score === "KO";
-  const scoreE = koE ? null : e1.score * 0.5 + e2.score * 0.5;
-
-  const f1 = tier52w(s.price, s.low52), f2 = tierYTD(s.ytd);
-  trace.F = { components: [
-    { name: "52w low proximity", input: s.low52 != null ? `$${s.price} vs low $${s.low52}` : "—", ...f1, weight: 0.5 },
-    { name: "YTD change", input: s.ytd != null ? `${s.ytd}%` : "—", ...f2, weight: 0.5 },
-  ]};
-  const scoreF = f1.score * 0.5 + f2.score * 0.5;
-
+  // G/H/I: average of item anchors (Low=1.5, Med=5, High=9.5). Items arrive from
+  // the scan and stay editable in the Evidence Room, so these recompute live.
   const qual = (key, comps, labels) => {
     const rat = (s.qualRationale && s.qualRationale[key]) || {};
     const items = comps.map((v, i) => ({
@@ -239,57 +63,42 @@ function computeStock(s, rules) {
   const G = qual("G", s.picpot || Array(6).fill(null), QUAL_LABELS.G);
   const H = qual("H", s.moat || Array(6).fill(null), QUAL_LABELS.H);
   const I = qual("I", s.mgmt || Array(5).fill(null), QUAL_LABELS.I);
-  trace.G = { components: G.items, note: s.picpotNote };
-  trace.H = { components: H.items, note: s.moatNote };
-  trace.I = { components: I.items, note: s.mgmtNote, lastEarnings: s.lastEarnings };
+  const trace = {
+    G: { components: G.items, note: s.picpotNote },
+    H: { components: H.items, note: s.moatNote },
+    I: { components: I.items, note: s.mgmtNote, lastEarnings: s.lastEarnings },
+  };
 
-  const days = s.catalystDate ? Math.max(0, Math.ceil((new Date(s.catalystDate) - new Date()) / 86400000)) : null;
-  const j1 = tierCatalystDays(days), j2 = tierConfidence(s.catalystConfidence);
-  const springConds = [
-    { name: "Reverse split history", met: !!s.revSplit },
-    { name: "In/near Penny Stock Hell", met: s.price != null && s.price < 1.5 },
-    { name: "Runway ≥ 2y", met: (runwayYears != null && runwayYears >= 2) || c2.score === 9.5 },
-    { name: "Net insider buying", met: s.insiderNet != null && s.insiderNet > 0 },
-    { name: `≥${rules.minAnalysts} analysts`, met: s.analysts != null && s.analysts >= rules.minAnalysts },
-    { name: "Catalyst ≤ 30d", met: days != null && days <= 30 },
-  ];
-  const springMet = springConds.filter(c => c.met).length;
-  const lifecycle = s.revSplit && s.price < 1.5 ? 9.5 : s.ipoDecline != null && s.ipoDecline < -50 ? 7.5 : 5;
-  trace.J = { components: [
-    { name: "Days to catalyst", input: s.catalystDate ? `${s.catalystType || "Catalyst"} on ${s.catalystDate}` : "None set", ...j1, weight: 0.35 },
-    { name: "Confidence", input: s.catalystConfidence || "—", ...j2, weight: 0.35 },
-    { name: "Compressed spring", input: `${springMet}/6 conditions`, score: springMet >= 4 ? 7.5 : springMet >= 2 ? 4.5 : 2, tier: springMet === 6 ? "🌀 FULL SPRING" : springMet >= 4 ? "Partial spring" : "Not coiled", rule: springMet === 6 ? "All 6 → bonus +1" : `${springMet}/6`, weight: 0.15 },
-    { name: "Lifecycle", input: s.revSplit ? `Rev split: ${s.revSplit}` : s.ipoDecline != null ? `${s.ipoDecline}% from IPO` : "Standard", score: lifecycle, tier: lifecycle === 9.5 ? "Post-split, beaten down" : lifecycle === 7.5 ? "Crushed IPO near inflection" : "Standard", rule: "Lifecycle tier", weight: 0.15 },
-  ], springConds };
-  const springBonus = springMet === 6 ? 1 : springMet >= 4 ? 0.5 : 0;
-  const scoreJ = Math.min(10, j1.score * 0.35 + j2.score * 0.35 + (springMet >= 4 ? 7.5 : springMet >= 2 ? 4.5 : 2) * 0.15 + lifecycle * 0.15 + springBonus);
-
-  const knockouts = [];
-  if (s.poisonPill) knockouts.push({ name: "Poison Pill", rule: "Hard Veto #1: active poison pill" });
-  if (b3.score === "KO") knockouts.push({ name: "Market Cap", rule: `Hard Veto #2: $${s.mktCap}M < $${rules.mktCapFloor}M` });
-  if (b2.score === "KO") knockouts.push({ name: "Volume", rule: `Hard Veto #3: ${s.volume?.toLocaleString()} < ${rules.volHardVeto.toLocaleString()}` });
-  if (koC) knockouts.push({ name: "Cash Runway", rule: "Hard Veto #4: runway < 6 months" });
-  if (b1.score === "KO" && !(runwayYears >= 2 && days != null && days <= 30)) knockouts.push({ name: "Sub-$1", rule: "Hard Veto #5: < $1 without 2y runway + 30d catalyst" });
-  if (koE) knockouts.push({ name: "Insider Selling", rule: "Hard Veto #6: sustained net insider selling" });
-
-  const computedScores = { A: scoreA, B: scoreB, C: scoreC, D: scoreD, E: scoreE, F: scoreF, G: G.score, H: H.score, I: I.score, J: scoreJ };
+  const claudeScore = k => (typeof cScores[k]?.score === "number" ? cScores[k].score : null);
+  const computedScores = {
+    A: claudeScore("A"), B: claudeScore("B"), C: claudeScore("C"), D: claudeScore("D"),
+    E: claudeScore("E"), F: claudeScore("F"),
+    G: G.score ?? claudeScore("G"), H: H.score ?? claudeScore("H"), I: I.score ?? claudeScore("I"),
+    J: claudeScore("J"),
+  };
   const ov = s.overrideScores || {};
   const scores = {};
   Object.keys(computedScores).forEach(k => { scores[k] = ov[k] && ov[k].value != null ? ov[k].value : computedScores[k]; });
+
   let composite = 0, wUsed = 0;
   Object.entries(scores).forEach(([k, v]) => { if (typeof v === "number") { composite += v * rules.weights[k]; wUsed += rules.weights[k]; } });
   composite = wUsed > 0 ? composite / wUsed : 0;
 
+  // Vetoes come straight from the scan.
+  const knockouts = ((cs && cs.vetoes && cs.vetoes.tripped) || []).map(t => ({ name: t, rule: "Hard veto (from scan)" }));
+
+  // Live countdown for display only — J score is frozen at scan time by design.
+  const days = s.catalystDate ? Math.max(0, Math.ceil((new Date(s.catalystDate) - new Date()) / 86400000)) : null;
+
   const decision = knockouts.length ? "DISQUALIFIED" : composite >= rules.goThreshold ? "GO" : composite >= rules.watchThreshold ? "WATCH" : "NO-GO";
   const signals = [];
   if (knockouts.length) signals.push(...knockouts.map(k => ({ level: "RED", text: k.name, rule: k.rule })));
-  if (runwayYears != null && runwayYears < rules.runwayMin && runwayYears >= rules.runwayVeto) signals.push({ level: "WATCH", text: `Runway ${runwayYears.toFixed(1)}y < ${rules.runwayMin}y min`, rule: "Heavy negative weight zone" });
   if (days != null && days <= 7) signals.push({ level: "WATCH", text: `Catalyst in ${days}d`, rule: "Imminent event" });
   if (days == null) signals.push({ level: "WATCH", text: "No catalyst identified", rule: "Heavy negative on Cluster J" });
-  if (s.insiderNet != null && s.insiderNet < 0 && s.insiderNet >= -50000) signals.push({ level: "WATCH", text: "Slight insider selling", rule: "Below veto threshold but negative" });
+  if (!cs) signals.push({ level: "WATCH", text: "Never full-scanned", rule: "Run a FULL SCAN through the skill to score this stock" });
   if (s.lastEarnings && (new Date() - new Date(s.lastEarnings)) / 86400000 > 90) signals.push({ level: "STALE", text: "Mgmt scores >90 days old", rule: "Refresh earnings call analysis" });
   const sigLevel = signals.some(x => x.level === "RED") ? "RED" : signals.some(x => x.level === "WATCH") ? "WATCH" : "CLEAR";
-  return { scores, computedScores, overrideScores: ov, composite: Math.round(composite * 10) / 10, decision, knockouts, signals, sigLevel, trace, daysToCatalyst: days, springMet, runwayYears };
+  return { scores, computedScores, overrideScores: ov, composite: Math.round(composite * 10) / 10, decision, knockouts, signals, sigLevel, trace, daysToCatalyst: days };
 }
 
 function computeMacro(m, rules) {
@@ -310,9 +119,11 @@ function computeMacro(m, rules) {
 }
 
 // Snapshot = frozen full state of a stock at import time
-function makeSnapshot(s, calc, date) {
+function makeSnapshot(s, calc, date, summary) {
   return {
     date, price: s.price, composite: calc.composite, decision: calc.decision, sigLevel: calc.sigLevel,
+    fields: { price: s.price ?? null, mktCap: s.mktCap ?? null, debt: s.debt ?? null, cash: s.cash ?? null, burnQ: s.burnQ ?? null, volume: s.volume ?? null, insiderNet: s.insiderNet ?? null },
+    summary: summary || "",
     scores: { ...calc.scores }, computedScores: { ...calc.computedScores }, overrideScores: JSON.parse(JSON.stringify(calc.overrideScores || {})),
     picpot: [...(s.picpot || [])], moat: [...(s.moat || [])], mgmt: [...(s.mgmt || [])],
     qualRationale: JSON.parse(JSON.stringify(s.qualRationale || {})),
@@ -382,10 +193,39 @@ const SAMPLE = {
   ],
 };
 
+// Soft dark: deep blue-ink base, raised panels, pastel state colors that glow.
 const COLORS = {
-  bg: "#0E1420", panel: "#161F30", panelLight: "#1D2940", border: "#2A3A57",
-  text: "#E8EDF5", dim: "#8A99B5", gold: "#E0B554", green: "#3DCC7E", red: "#E85C5C", yellow: "#E0B554", blue: "#5B8DD9",
+  bg: "#101321", panel: "#171B2C", panelLight: "#202538", border: "#262C42",
+  text: "#EDEFF7", dim: "#7C84A3", gold: "#E9B458", green: "#5EE7A3", red: "#FF7A8A", yellow: "#F5C26B", blue: "#7FA6FF",
 };
+const glow = (c, s = 16) => `0 0 ${s}px ${c}40`;
+const GLOBAL_CSS = `
+  button { transition: transform .16s ease, box-shadow .16s ease, background .16s ease, color .16s ease, border-color .16s ease; }
+  button:hover { transform: translateY(-1px); }
+  button:active { transform: translateY(0) scale(.97); }
+  input, textarea, select { transition: border-color .16s ease, box-shadow .16s ease; }
+  input:focus, textarea:focus { outline: none; border-color: ${COLORS.blue} !important; box-shadow: 0 0 0 3px ${COLORS.blue}26; }
+  .room { animation: rise .32s ease both; }
+  .hcard { transition: transform .18s ease, background .18s ease, box-shadow .18s ease, border-color .18s ease; }
+  .hcard:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(0,0,0,.38); }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  ::selection { background: ${COLORS.blue}55; }
+  @media (prefers-reduced-motion: reduce) { *, .room, .hcard { animation: none !important; transition: none !important; } }
+`;
+// Counts a score up/down to its new value — the "alive" numbers.
+function AnimNum({ v, decimals = 1, style, prefix = "", suffix = "" }) {
+  const [disp, setDisp] = useState(v);
+  const prev = useRef(v);
+  useEffect(() => {
+    const from = prev.current, to = v; prev.current = v;
+    if (from === to || typeof to !== "number" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { setDisp(to); return; }
+    const t0 = performance.now(), dur = 550; let raf;
+    const tick = t => { const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); setDisp(from + (to - from) * e); if (p < 1) raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [v]);
+  return <span style={style}>{prefix}{typeof disp === "number" ? disp.toFixed(decimals) : "—"}{suffix}</span>;
+}
 const sigColor = l => (l === "RED" ? COLORS.red : l === "WATCH" ? COLORS.yellow : COLORS.green);
 const tileColor = c => (c === "red" ? COLORS.red : c === "yellow" ? COLORS.yellow : c === "green" ? COLORS.green : COLORS.dim);
 const decColor = d => (d === "GO" ? COLORS.green : d === "WATCH" ? COLORS.yellow : COLORS.red);
@@ -395,13 +235,46 @@ function Delta({ v, suffix = "" }) {
   if (v == null) return <span style={{ color: COLORS.dim }}>—</span>;
   return <span style={{ color: v > 0 ? COLORS.green : v < 0 ? COLORS.red : COLORS.dim, fontWeight: 600 }}>{v > 0 ? "▲" : v < 0 ? "▼" : "•"} {Math.abs(v).toFixed(1)}{suffix}</span>;
 }
+// ─── UI KIT ─────────────────────────────────────────────────────────────────
+function useWide(bp = 860) {
+  const [wide, setWide] = useState(typeof window !== "undefined" ? window.innerWidth >= bp : true);
+  useEffect(() => {
+    const on = () => setWide(window.innerWidth >= bp);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, [bp]);
+  return wide;
+}
+function Btn({ children, icon: I, color = COLORS.dim, accent, onClick, title, style }) {
+  const c = accent || color;
+  return (
+    <button onClick={onClick} title={title} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: accent ? `${c}14` : "transparent", color: accent ? c : COLORS.dim, border: `1px solid ${accent ? `${c}55` : COLORS.border}`, borderRadius: 10, padding: "8px 15px", cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "inherit", ...style }}>
+      {I && <I size={15} strokeWidth={2.2} />} {children}
+    </button>
+  );
+}
+function PageHeader({ title, sub, children }) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 14, flexWrap: "wrap", marginBottom: 26 }}>
+      <div style={{ minWidth: 200 }}>
+        <div style={{ fontSize: 27, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.1 }}>{title}</div>
+        {sub && <div style={{ fontSize: 13.5, color: COLORS.dim, marginTop: 5 }}>{sub}</div>}
+      </div>
+      <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>{children}</div>
+    </div>
+  );
+}
+function Eyebrow({ children, style }) {
+  return <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.dim, letterSpacing: 1.4, textTransform: "uppercase", marginBottom: 10, ...style }}>{children}</div>;
+}
+
 function ScoreRing({ score, size = 52, decision }) {
   const pct = score != null ? Math.min(score / 10, 1) : 0, r = size / 2 - 4, c = 2 * Math.PI * r;
   const col = decision ? decColor(decision) : COLORS.gold;
   return (
-    <svg width={size} height={size}>
+    <svg width={size} height={size} style={{ filter: decision === "GO" ? `drop-shadow(0 0 8px ${col}66)` : "none" }}>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={COLORS.border} strokeWidth="4" />
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={col} strokeWidth="4" strokeDasharray={`${c * pct} ${c}`} strokeLinecap="round" transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={col} strokeWidth="4" strokeDasharray={`${c * pct} ${c}`} strokeLinecap="round" transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ transition: "stroke-dasharray .6s ease, stroke .3s ease" }} />
       <text x="50%" y="54%" textAnchor="middle" dominantBaseline="middle" fill={COLORS.text} fontSize={size / 3.4} fontWeight="700">{score != null ? score.toFixed(1) : "—"}</text>
     </svg>
   );
@@ -409,7 +282,7 @@ function ScoreRing({ score, size = 52, decision }) {
 function HeadlineList({ items }) {
   if (!items?.length) return null;
   return (
-    <div style={{ marginTop: 8, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 14px" }}>
+    <div style={{ marginTop: 8, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "8px 14px" }}>
       {items.map((h, i) => (
         <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 0", borderBottom: i < items.length - 1 ? `1px solid ${COLORS.border}` : "none", fontSize: 12, flexWrap: "wrap" }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: h.impact === "tailwind" ? COLORS.green : h.impact === "headwind" ? COLORS.red : COLORS.dim, minWidth: 68, textTransform: "uppercase" }}>{h.impact}</span>
@@ -424,19 +297,18 @@ function HeadlineList({ items }) {
 
 export default function App() {
   const [data, setData] = useState(SAMPLE);
-  const [rules] = useState(DEFAULT_RULES);
+  // Rules persist inside data.rules (merged over defaults) — edited in the Config room,
+  // and they ride into every brief as CONFIG, which beats the skill's own defaults.
+  const rules = {
+    ...DEFAULT_RULES, ...(data.rules || {}),
+    weights: { ...DEFAULT_RULES.weights, ...((data.rules || {}).weights || {}) },
+    macro: { ...DEFAULT_RULES.macro, ...((data.rules || {}).macro || {}) },
+  };
   const [room, setRoom] = useState("cockpit");
   const [selStock, setSelStock] = useState(null);
   const [selCluster, setSelCluster] = useState(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const [newTicker, setNewTicker] = useState("");
-  const [newName, setNewName] = useState("");
-  const [newSector, setNewSector] = useState("");
-  const [fetchingTicker, setFetchingTicker] = useState(null);
   const [fetchMsg, setFetchMsg] = useState("");
-  const [headlinesLoading, setHeadlinesLoading] = useState(false);
   const [drillTile, setDrillTile] = useState(null);
-  const [journalEdit, setJournalEdit] = useState(null);
   const [briefModal, setBriefModal] = useState(null);
   const [syncModal, setSyncModal] = useState(false);
   const [syncText, setSyncText] = useState("");
@@ -444,6 +316,7 @@ export default function App() {
   const [editComp, setEditComp] = useState(null);
   const [clusterOvEdit, setClusterOvEdit] = useState(null);
   const [histDate, setHistDate] = useState(null);
+  const [sectorEdit, setSectorEdit] = useState(false);
   const [copyMsg, setCopyMsg] = useState("");
 
   useEffect(() => {
@@ -473,41 +346,6 @@ export default function App() {
 
   const openDesk = t => { setSelStock(t); setSelCluster(null); setHistDate(null); setRoom("desk"); };
 
-  const fetchHeadlines = async () => {
-    setHeadlinesLoading(true);
-    try {
-      const sectorList = data.sectors.map(s => s.name).join(", ");
-      const tickers = data.stocks.map(s => s.ticker).join(", ");
-      const resp = await fetch("/api/headlines", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sectorList, tickers }),
-      });
-      const d = await resp.json();
-      if (d.error) { setFetchMsg(`Headlines failed: ${d.error}`); setHeadlinesLoading(false); return; }
-      const text = (d.content || []).filter(i => i.type === "text").map(i => i.text).join("\n");
-      const clean = text.replace(/```json|```/g, "").trim();
-      const st = clean.indexOf("["), en = clean.lastIndexOf("]");
-      if (st >= 0 && en > st) await persist({ ...data, headlines: JSON.parse(clean.slice(st, en + 1)), headlinesDate: new Date().toISOString().slice(0, 10) });
-    } catch (e) { console.error(e); setFetchMsg(`Headlines failed: ${e.message}`); }
-    setHeadlinesLoading(false);
-  };
-
-  // ─── LSEG quant fetch ───────────────────────────────────────────────────
-  // Calls our own backend (/api/quant), which holds the key and talks to LSEG.
-  const fetchQuant = async (ticker) => {
-    const resp = await fetch("/api/quant", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticker }),
-    });
-    const d = await resp.json();
-    if (d.error) throw new Error(d.error || "API error");
-    const text = (d.content || []).filter(i => i.type === "text").map(i => i.text).join("\n");
-    const clean = text.replace(/```json|```/g, "").trim();
-    const st = clean.indexOf("{"), en = clean.lastIndexOf("}");
-    if (st < 0 || en < 0) throw new Error("LSEG returned no parseable data" + (text ? `: ${text.slice(0, 160)}` : "."));
-    return JSON.parse(clean.slice(st, en + 1));
-  };
-
   const QUANT_KEYS = ["price", "pb", "peerPB", "pe", "indPE", "mktCap", "volume", "debt", "cash", "burnQ", "sharesOut", "analysts", "target", "low52", "ytd", "insiderNet", "insiderBuyPrice"];
   const applyQuant = (stock, obj) => {
     const f = obj.fields || {};
@@ -516,47 +354,6 @@ export default function App() {
     if (obj.name && (!merged.name || merged.name === merged.ticker)) merged.name = obj.name;
     merged.lastFetch = { date: new Date().toISOString().slice(0, 10), missing: obj.missing || [], notes: obj.notes || "", currency: obj.currency || "" };
     return merged;
-  };
-
-  const addStock = async () => {
-    const t = newTicker.trim().toUpperCase();
-    if (!t) return;
-    if (data.stocks.find(s => s.ticker === t)) { setFetchMsg(`${t} is already in your list.`); return; }
-    setFetchingTicker("__add__"); setFetchMsg("");
-    let shell = { ticker: t, name: newName.trim() || t, sector: newSector.trim() || "", held: false, entryPrice: null,
-      picpot: Array(6).fill(null), moat: Array(6).fill(null), mgmt: Array(5).fill(null), qualRationale: {}, overrideScores: {}, notebook: [], overrides: [], decisions: [] };
-    try {
-      const obj = await fetchQuant(t);
-      shell = applyQuant(shell, obj);
-      if (newSector.trim()) shell.sector = newSector.trim();
-      const miss = obj.missing || [];
-      setFetchMsg(miss.length ? `Added ${t}. LSEG didn't return: ${miss.join(", ")} — fill those manually.` : `Added ${t}. All quant fields fetched from LSEG.`);
-    } catch (e) {
-      setFetchMsg(`Added ${t} as a blank shell. LSEG fetch failed: ${e.message}. Enter the quant by hand.`);
-    }
-    await persist({ ...data, stocks: [...data.stocks, shell] });
-    setFetchingTicker(null); setShowAdd(false); setNewTicker(""); setNewName(""); setNewSector("");
-    openDesk(t);
-  };
-
-  const refreshQuant = async (ticker) => {
-    setFetchingTicker(ticker); setFetchMsg("");
-    try {
-      const obj = await fetchQuant(ticker);
-      const stocks = data.stocks.map(s => {
-        if (s.ticker !== ticker) return s;
-        const exCalc = computeStock(s, rules);
-        const next = applyQuant(s, obj);
-        next.prevPrice = s.price ?? null; next.prevScore = exCalc.composite; next.prevScores = exCalc.scores;
-        return next;
-      });
-      await persist({ ...data, stocks });
-      const miss = obj.missing || [];
-      setFetchMsg(miss.length ? `Refreshed ${ticker}. LSEG didn't return: ${miss.join(", ")}.` : `Refreshed ${ticker}. All quant fields fetched.`);
-    } catch (e) {
-      setFetchMsg(`Refresh failed for ${ticker}: ${e.message}`);
-    }
-    setFetchingTicker(null);
   };
 
   const logOverride = async (ticker, signalText) => {
@@ -650,26 +447,100 @@ export default function App() {
     await persist({ ...data, snapshots });
   };
 
-  const buildBrief = (s) => {
-    const c = s.calc, L = [];
-    L.push(`POSITION BRIEF — ${s.ticker} (${s.name}) · ${s.sector}`);
-    L.push(`Generated ${new Date().toISOString().slice(0, 10)} from The Screener`);
-    L.push(`${s.held && s.entryPrice ? `HELD — entry $${s.entryPrice}${s.shares ? ` × ${s.shares}` : ""} since ${s.entryDate}` : "Watchlist"} · current price $${s.price ?? "?"}`);
-    L.push(`Composite ${c.composite} → ${c.decision} · signal ${c.sigLevel}`);
-    if (c.daysToCatalyst != null) L.push(`Catalyst: ${s.catalystType} in ${c.daysToCatalyst}d (${s.catalystConfidence} confidence)`);
-    if (c.knockouts.length) L.push(`KNOCKOUTS: ${c.knockouts.map(k => k.name).join(", ")}`);
-    L.push(""); L.push("CLUSTER SCORES:");
-    Object.keys(CLUSTER_NAMES).forEach(k => {
-      const v = c.scores[k], comp = c.computedScores[k], o = c.overrideScores[k];
-      let line = `  ${k} ${CLUSTER_NAMES[k]} (w${(rules.weights[k] * 100).toFixed(0)}%): ${typeof v === "number" ? v.toFixed(1) : v ?? "—"}`;
-      if (o && o.value != null) line += ` [OVERRIDE from ${typeof comp === "number" ? comp.toFixed(1) : comp}: ${o.reason}]`;
-      L.push(line);
-      if (["G", "H", "I"].includes(k)) c.trace[k].components.forEach(c2 => { if (c2.input !== "—" || c2.rationale) L.push(`     - ${c2.name}: ${c2.input}${c2.rationale ? ` — ${c2.rationale}` : ""}${c2.sources?.length ? ` [${c2.sources.join("; ")}]` : ""}`); });
+  // ─── BRIEF GENERATOR ────────────────────────────────────────────────────
+  // Builds the paste-into-Claude brief for UPDATE SCAN or DISCUSS. The brief IS
+  // Claude's memory: prior scores, reasoning, watch items, verdict, overrides.
+  // ─── EDITABLE RULES ─────────────────────────────────────────────────────
+  const setRule = async (key, value) => {
+    const v = value === "" ? null : parseFloat(value);
+    if (v == null || isNaN(v)) return;
+    await persist({ ...data, rules: { ...(data.rules || {}), [key]: v } });
+  };
+  const setWeight = async (cluster, value) => {
+    const v = parseFloat(value);
+    if (isNaN(v) || v < 0) return;
+    const weights = { ...rules.weights, [cluster]: v / 100 };
+    await persist({ ...data, rules: { ...(data.rules || {}), weights } });
+  };
+  const resetRules = async () => {
+    if (!confirm("Reset all weights, bands and veto thresholds to the framework defaults?")) return;
+    await persist({ ...data, rules: {} });
+  };
+
+  // ─── PORTFOLIO ──────────────────────────────────────────────────────────
+  const buildPortfolioBrief = () => [
+    "PORTFOLIO UPDATE",
+    `TRACKED: ${data.stocks.map(s => s.ticker).join(", ") || "none"}`,
+    "(attach a screenshot of your broker holdings — the skill transcribes it and returns a portfolio_update block)",
+  ].join("\n");
+  const applyPortfolioUpdate = (d, obj) => {
+    const today = obj.date || new Date().toISOString().slice(0, 10);
+    const positions = (Array.isArray(obj.positions) ? obj.positions : []).filter(p => p && p.ticker);
+    // Broker is ground truth for held stocks: shares + avg cost reconcile automatically.
+    // Only kind:"stock" rows touch the book — options/ETFs display but don't set cost basis.
+    const stocks = d.stocks.map(s => {
+      const m = positions.find(p => (p.ticker || "").toUpperCase() === s.ticker && (p.kind || "stock") === "stock");
+      if (!m) return s;
+      return { ...s, held: true, shares: m.qty ?? s.shares, entryPrice: m.avgPrice ?? s.entryPrice, entryDate: s.entryDate || today };
     });
-    if ((s.notebook || []).length) { L.push(""); L.push("NOTEBOOK:"); s.notebook.forEach(n => L.push(`  ${n.date}: ${n.text}`)); }
-    L.push(""); L.push("Help me reassess the qualitative scores (PICPOT=G, moat=H, management=I). Research current sources. For each component propose Low/Medium/High with reasoning + sources. When done, give me a JSON block in EXACTLY this shape so I can sync it back:");
-    L.push(`{"ticker":"${s.ticker}","G":[{"score":2,"rationale":"...","sources":["..."]}, ...6 items],"H":[...6],"I":[...5]}`);
-    L.push("Score: 1=Low, 2=Medium, 3=High. Include all components even if unchanged.");
+    return { stocks, portfolio: { date: today, cash: obj.cash ?? null, read: obj.read || "", positions } };
+  };
+
+  // ─── MARKET BRIEF + EDITABLE MACRO/SECTORS ──────────────────────────────
+  const buildMarketBrief = () => {
+    const L = [];
+    L.push("MARKET UPDATE");
+    L.push(`INCLUDE: ${(data.sectors || []).map(s => `${s.name}${s.etf ? ` (${s.etf})` : ""}`).join(", ") || "none"}`);
+    L.push(`TICKERS: ${data.stocks.map(s => s.ticker).join(", ") || "none"}`);
+    return L.join("\n");
+  };
+  const MACRO_FIELD = { cape: "cape", vix: "vix", fg: "fearGreed", buffett: "buffett", yield: "yield10", margin: "marginDebt" };
+  const updateMacro = async (tileKey, value) => {
+    const field = MACRO_FIELD[tileKey];
+    const v = value === "" ? null : parseFloat(value);
+    if (value !== "" && isNaN(v)) return;
+    await persist({ ...data, macro: { ...data.macro, [field]: v }, macroDate: new Date().toISOString().slice(0, 10) });
+  };
+  const addSector = async (name, etf) => {
+    if (!name.trim()) return;
+    if ((data.sectors || []).some(x => x.name.toLowerCase() === name.trim().toLowerCase())) { setFetchMsg(`${name.trim()} is already in the sector list.`); return; }
+    await persist({ ...data, sectors: [...(data.sectors || []), { name: name.trim(), etf: etf.trim(), change: null, read: "" }] });
+  };
+  const removeSector = async (name) => {
+    if (!confirm(`Remove ${name} from the sector list? Market updates will stop covering it.`)) return;
+    await persist({ ...data, sectors: (data.sectors || []).filter(x => x.name !== name) });
+  };
+
+  const buildBrief = (s, mode) => {
+    const c = s.calc, cs = s.claudeScan, L = [];
+    L.push(`${mode === "discuss" ? "DISCUSS" : "UPDATE SCAN"}: ${s.ticker}`);
+    L.push("CONFIG");
+    L.push(`  weights: ${JSON.stringify(rules.weights)}`);
+    L.push(`  bands: { go: ${rules.goThreshold}, watch: ${rules.watchThreshold} }`);
+    L.push(`  vetoes: { mktCapFloorM: ${rules.mktCapFloor}, minDailyVolume: ${rules.volHardVeto}, runwayVetoYears: ${rules.runwayVeto}, runwayMinYears: ${rules.runwayMin}, minAnalysts: ${rules.minAnalysts}, catalystWindowDays: ${rules.catalystWindow} }`);
+    L.push(`LAST SCAN: ${cs?.date || "never (no full scan on record)"}`);
+    const pf = {};
+    QUANT_KEYS.forEach(k => { if (s[k] != null) pf[k] = s[k]; });
+    L.push(`PRIOR FIELDS: ${JSON.stringify(pf)}`);
+    L.push(`PRIOR CATALYST: ${s.catalystDate ? JSON.stringify({ type: s.catalystType, date: s.catalystDate, confidence: s.catalystConfidence }) : "none"}`);
+    L.push("PRIOR CLUSTERS:");
+    Object.keys(CLUSTER_NAMES).forEach(k => {
+      const v = c.scores[k], cd = cs?.clusters?.[k];
+      let line = `  ${k} ${CLUSTER_NAMES[k]}: ${typeof v === "number" ? v.toFixed(1) : "unscored"}`;
+      if (cd?.reasoning) line += ` — ${cd.reasoning}`;
+      L.push(line);
+      if (["G", "H", "I"].includes(k)) {
+        const items = c.trace[k].components.filter(x => x.input !== "—");
+        if (items.length) L.push(`     items: ${items.map(x => `${x.name}=${x.input}`).join(", ")}`);
+        items.forEach(x => { if (x.rationale) L.push(`     - ${x.name}: ${x.rationale}`); });
+      }
+      if (cd?.watch?.length) L.push(`     watch: ${cd.watch.join(" | ")}`);
+    });
+    L.push(`PRIOR VERDICT: ${cs?.verdict ? JSON.stringify(cs.verdict) : "none"}`);
+    const ovs = Object.entries(c.overrideScores || {}).filter(([, o]) => o && o.value != null);
+    L.push(`USER OVERRIDES: ${ovs.length ? ovs.map(([k, o]) => `${k}=${o.value} (${o.reason || "no reason logged"})`).join("; ") : "none"}`);
+    if (cs?.vetoes?.tripped?.length) L.push(`PRIOR VETOES TRIPPED: ${cs.vetoes.tripped.join("; ")}`);
+    if ((s.notebook || []).length) { L.push("NOTEBOOK:"); s.notebook.slice(0, 5).forEach(n => L.push(`  ${n.date}: ${n.text}`)); }
     return L.join("\n");
   };
 
@@ -708,6 +579,127 @@ export default function App() {
     return { stocks, added };
   };
 
+  // ─── FULL SCAN ingest ───────────────────────────────────────────────────
+  // Deep dossier from the skill's full_scan block. Creates the stock on the board
+  // (replaces Add Ticker), or refreshes an existing one. Quant, catalyst, quals and
+  // the dossier are replaced; position, notes, decisions and history survive.
+  const applyFullScan = (stocksArr, obj) => {
+    const idx = stocksArr.findIndex(s => s.ticker === obj.ticker);
+    const added = idx < 0;
+    let next = added
+      ? { ticker: obj.ticker, name: obj.name || obj.ticker, sector: obj.sector || "", held: false, entryPrice: null,
+          picpot: Array(6).fill(null), moat: Array(6).fill(null), mgmt: Array(5).fill(null),
+          qualRationale: {}, overrideScores: {}, notebook: [], overrides: [], decisions: [] }
+      : { ...stocksArr[idx] };
+    if (!added) {
+      const exCalc = computeStock(stocksArr[idx], rules);
+      next.prevPrice = stocksArr[idx].price ?? null; next.prevScore = exCalc.composite; next.prevScores = exCalc.scores;
+    }
+    if (obj.name) next.name = obj.name;
+    if (obj.fields && typeof obj.fields === "object") next = applyQuant(next, obj);
+    if (obj.catalyst === null) { next.catalystType = null; next.catalystDate = null; next.catalystConfidence = null; }
+    else if (obj.catalyst && typeof obj.catalyst === "object") {
+      next.catalystType = obj.catalyst.type ?? next.catalystType;
+      next.catalystDate = obj.catalyst.date ?? next.catalystDate;
+      next.catalystConfidence = obj.catalyst.confidence ?? next.catalystConfidence;
+    }
+    const cl = obj.clusters || {};
+    ["G", "H", "I"].forEach(k => {
+      const items = cl[k] && Array.isArray(cl[k].items) ? cl[k].items : null;
+      if (items) {
+        const arrKey = k === "G" ? "picpot" : k === "H" ? "moat" : "mgmt";
+        const arr = Array(k === "I" ? 5 : 6).fill(null);
+        const qr = { ...(next.qualRationale || {}) }; qr[k] = {};
+        items.forEach((c, i) => {
+          if (c && c.score != null) arr[i] = c.score;
+          if (c) qr[k][i] = { text: c.rationale || "", sources: c.sources || [] };
+        });
+        next[arrKey] = arr; next.qualRationale = qr;
+      }
+    });
+    // The dossier layer — Claude's facts, reasoning, watch items, verdict, bear case.
+    next.claudeScan = {
+      kind: "full_scan", date: obj.date || new Date().toISOString().slice(0, 10),
+      clusters: Object.fromEntries(Object.entries(cl).map(([k, c]) => [k, {
+        score: typeof c.score === "number" ? c.score : null,
+        facts: Array.isArray(c.facts) ? c.facts : [],
+        reasoning: c.reasoning || "",
+        watch: Array.isArray(c.watch) ? c.watch : [],
+      }])),
+      composite: typeof obj.composite === "number" ? obj.composite : null,
+      band: obj.band || "", vetoes: obj.vetoes || null,
+      verdict: obj.verdict || null, bearCase: obj.bearCase || "", summary: obj.summary || "",
+    };
+    const stocks = added ? [...stocksArr, next] : stocksArr.map((s, i) => (i === idx ? next : s));
+    return { stocks, added };
+  };
+
+  // ─── UPDATE SCAN ingest ─────────────────────────────────────────────────
+  // Refreshes a tracked stock from an update_scan block (from an UPDATE SCAN or
+  // a finalized DISCUSS). Captures prev state for the diff arrows, freezes a
+  // snapshot of the NEW state into history (with the update's summary), merges
+  // the dossier with per-cluster changed/changeNote, watch check, verdict.
+  const applyUpdateScan = (d, obj) => {
+    const idx = d.stocks.findIndex(s => s.ticker === obj.ticker);
+    if (idx < 0) return { error: `${obj.ticker} isn't on the board. Run a FULL SCAN first — updates only refresh existing stocks.` };
+    const prior = d.stocks[idx];
+    const exCalc = computeStock(prior, rules);
+    let next = { ...prior, prevPrice: prior.price ?? null, prevScore: exCalc.composite, prevScores: exCalc.scores };
+    if (obj.fields && typeof obj.fields === "object") next = applyQuant(next, obj);
+    if (obj.catalyst === null) { next.catalystType = null; next.catalystDate = null; next.catalystConfidence = null; }
+    else if (obj.catalyst && typeof obj.catalyst === "object") {
+      next.catalystType = obj.catalyst.type ?? next.catalystType;
+      next.catalystDate = obj.catalyst.date ?? next.catalystDate;
+      next.catalystConfidence = obj.catalyst.confidence ?? next.catalystConfidence;
+    }
+    const cl = obj.clusters || {};
+    ["G", "H", "I"].forEach(k => {
+      const items = cl[k] && Array.isArray(cl[k].items) ? cl[k].items : null;
+      if (items) {
+        const arrKey = k === "G" ? "picpot" : k === "H" ? "moat" : "mgmt";
+        const arr = Array(k === "I" ? 5 : 6).fill(null);
+        const qr = { ...(next.qualRationale || {}) }; qr[k] = {};
+        items.forEach((c, i) => {
+          if (c && c.score != null) arr[i] = c.score;
+          if (c) qr[k][i] = { text: c.rationale || "", sources: c.sources || [] };
+        });
+        next[arrKey] = arr; next.qualRationale = qr;
+      }
+    });
+    const prevClusters = (prior.claudeScan && prior.claudeScan.clusters) || {};
+    const mergedClusters = { ...prevClusters };
+    Object.entries(cl).forEach(([k, c]) => {
+      mergedClusters[k] = {
+        score: typeof c.score === "number" ? c.score : (prevClusters[k]?.score ?? null),
+        facts: Array.isArray(c.facts) ? c.facts : (prevClusters[k]?.facts || []),
+        reasoning: c.reasoning || prevClusters[k]?.reasoning || "",
+        watch: Array.isArray(c.watch) ? c.watch : (prevClusters[k]?.watch || []),
+        changed: !!c.changed, changeNote: c.changed ? (c.changeNote || "") : null,
+      };
+    });
+    next.claudeScan = {
+      kind: obj.type || "update_scan", date: obj.date || new Date().toISOString().slice(0, 10),
+      clusters: mergedClusters,
+      composite: typeof obj.composite === "number" ? obj.composite : (prior.claudeScan?.composite ?? null),
+      band: obj.band || prior.claudeScan?.band || "",
+      vetoes: obj.vetoes || prior.claudeScan?.vetoes || null,
+      verdict: obj.verdict || prior.claudeScan?.verdict || null,
+      bearCase: prior.claudeScan?.bearCase || "",
+      summary: obj.summary || "",
+      watchCheck: Array.isArray(obj.watchCheck) ? obj.watchCheck : [],
+    };
+    const stocks = d.stocks.map((s, i) => (i === idx ? next : s));
+    // Freeze the post-update state into history, keyed by the scan date.
+    const newCalc = computeStock(next, rules);
+    const snapshots = JSON.parse(JSON.stringify(d.snapshots || {}));
+    if (!snapshots[obj.ticker]) snapshots[obj.ticker] = [];
+    const snap = makeSnapshot(next, newCalc, next.claudeScan.date, obj.summary || "");
+    const last = snapshots[obj.ticker][snapshots[obj.ticker].length - 1];
+    if (last && last.date === snap.date) snapshots[obj.ticker][snapshots[obj.ticker].length - 1] = snap;
+    else snapshots[obj.ticker].push(snap);
+    return { stocks, snapshots };
+  };
+
   const applySync = async () => {
     setSyncError("");
     try {
@@ -716,6 +708,78 @@ export default function App() {
       let obj;
       try { obj = JSON.parse(syncText.slice(start, end + 1)); }
       catch (e) { setSyncError("JSON didn't parse: " + e.message + ". Make sure you copied the whole block."); return; }
+
+      // ── PORTFOLIO UPDATE: broker screenshot transcription → reconcile the book ──
+      if (obj.type === "portfolio_update") {
+        const res = applyPortfolioUpdate(data, obj);
+        await persist({ ...data, stocks: res.stocks, portfolio: res.portfolio });
+        setSyncModal(false); setSyncText("");
+        const matched = res.portfolio.positions.filter(p => (p.kind || "stock") === "stock" && data.stocks.some(s => s.ticker === (p.ticker || "").toUpperCase())).length;
+        setFetchMsg(`Portfolio imported — ${res.portfolio.positions.length} holdings read, ${matched} reconciled with the board`);
+        setRoom("positions");
+        return;
+      }
+
+      // ── MARKET UPDATE: macro tiles + sector reads + headlines + backdrop ──
+      if (obj.type === "market_update") {
+        const report = [];
+        let d = { ...data };
+        if (obj.macro && typeof obj.macro === "object") {
+          const m = { ...d.macro }; let n = 0;
+          ["cape", "vix", "fearGreed", "buffett", "yield10", "marginDebt"].forEach(k => { if (obj.macro[k] != null) { m[k] = obj.macro[k]; n++; } });
+          if (n) { d.macro = m; report.push(`macro ${n}/6`); }
+        }
+        if (Array.isArray(obj.sectors)) {
+          const sectors = [...(d.sectors || [])]; let upd = 0, addS = 0;
+          obj.sectors.forEach(sec => {
+            if (!sec || !sec.name) return;
+            const i = sectors.findIndex(x => (x.name || "").toLowerCase() === sec.name.toLowerCase());
+            const patch = { ...(sec.etf ? { etf: sec.etf } : {}), ...(sec.change != null ? { change: sec.change } : {}), ...(sec.read ? { read: sec.read } : {}) };
+            if (i >= 0) { sectors[i] = { ...sectors[i], ...patch }; upd++; }
+            else { sectors.push({ name: sec.name, etf: sec.etf || "", change: sec.change ?? null, read: sec.read || "" }); addS++; }
+          });
+          d.sectors = sectors; report.push(`sectors ${upd}${addS ? `+${addS} new` : ""}`);
+        }
+        if (Array.isArray(obj.headlines)) {
+          d.headlines = obj.headlines.filter(h => h && h.headline);
+          d.headlinesDate = obj.date || new Date().toISOString().slice(0, 10);
+          report.push(`${d.headlines.length} headlines`);
+        }
+        if (obj.read) { d.marketRead = obj.read; report.push("backdrop read"); }
+        d.macroDate = obj.date || new Date().toISOString().slice(0, 10);
+        await persist(d);
+        setSyncModal(false); setSyncText("");
+        setFetchMsg(`Market update applied — ${report.join(" · ") || "nothing recognized in the block"}`);
+        setRoom("cockpit");
+        return;
+      }
+
+      // ── UPDATE SCAN: refresh a tracked stock, freeze snapshot, render the diff ──
+      if (obj.type === "update_scan") {
+        if (!obj.ticker) { setSyncError('update_scan block is missing "ticker".'); return; }
+        const res = applyUpdateScan(data, obj);
+        if (res.error) { setSyncError(res.error); return; }
+        await persist({ ...data, stocks: res.stocks, snapshots: res.snapshots });
+        setSyncModal(false); setSyncText("");
+        const changed = Object.entries(obj.clusters || {}).filter(([, c]) => c && c.changed).map(([k]) => k);
+        setFetchMsg(`${obj.ticker} updated — verdict ${obj.verdict?.call ? obj.verdict.call.split("_").join(" ") : "—"}${changed.length ? ` · moved: ${changed.join(", ")}` : " · no cluster changes"} · snapshot frozen`);
+        openDesk(obj.ticker);
+        return;
+      }
+
+      // ── FULL SCAN: deep dossier — creates the stock, or overwrites after confirm ──
+      if (obj.type === "full_scan") {
+        if (!obj.ticker) { setSyncError('full_scan block is missing "ticker".'); return; }
+        const exists = data.stocks.some(s => s.ticker === obj.ticker);
+        if (exists && !window.confirm(`${obj.ticker} is already on the board. Overwrite with this full scan?\n\nQuant, catalyst, qual scores and the dossier get replaced. Your position, notes, decisions and history stay.`)) return;
+        const res = applyFullScan(data.stocks, obj);
+        await persist({ ...data, stocks: res.stocks });
+        setSyncModal(false); setSyncText("");
+        const miss = obj.missing || [];
+        setFetchMsg(`${obj.ticker} full scan ${res.added ? "added to the board" : "refreshed"} — Claude's verdict: ${obj.verdict?.call ? obj.verdict.call.split("_").join(" ") : "—"}${miss.length ? ` · not verified: ${miss.join(", ")}` : ""}`);
+        openDesk(obj.ticker);
+        return;
+      }
 
       // ── WEEKLY UPDATE: macro + sectors + headlines + all stocks in one block ──
       if (obj.type === "weekly_update") {
@@ -793,7 +857,7 @@ export default function App() {
         const ok = window.confirm(`Restore backup from ${when}?\n\nThis REPLACES everything currently in the app (${data.stocks.length} stocks now vs ${d.stocks.length} in the backup). This cannot be undone.\n\nTip: export a backup of the current state first if unsure.`);
         if (!ok) { setFetchMsg("Import cancelled. Nothing changed."); return; }
         await persist(d);
-        setFetchMsg(`Backup from ${when} restored: ${d.stocks.length} stocks, ${(d.journal || []).length} journal entries.`);
+        setFetchMsg(`Backup from ${when} restored: ${d.stocks.length} stocks.`);
       } catch (e) {
         setFetchMsg("Import failed: couldn't read that file as JSON. " + e.message);
       }
@@ -814,96 +878,83 @@ export default function App() {
     }
   };
 
-  const snapshotToJournal = async () => {
-    const week = new Date().toISOString().slice(0, 10);
-    const entries = computed.map(s => ({ week, ticker: s.ticker, decision: s.calc.decision, score: s.calc.composite, priceScreen: s.price, priceReview: null, catalystFired: "", thesisHeld: "", right: "", wrong: "", notes: "" }));
-    // Also freeze immutable full-state snapshots — this is the weekly cycle marker now that Excel import is gone.
-    const snapshots = JSON.parse(JSON.stringify(data.snapshots || {}));
-    computed.forEach(s => {
-      if (!snapshots[s.ticker]) snapshots[s.ticker] = [];
-      const snap = makeSnapshot(s, s.calc, week);
-      const last = snapshots[s.ticker][snapshots[s.ticker].length - 1];
-      if (!last || last.date !== week) snapshots[s.ticker].push(snap);
-      else snapshots[s.ticker][snapshots[s.ticker].length - 1] = snap;
-    });
-    await persist({ ...data, journal: [...entries, ...(data.journal || [])], snapshots });
-    setRoom("journal");
-  };
-  const updateJournal = async (i, field, value) => {
-    const journal = [...data.journal];
-    journal[i] = { ...journal[i], [field]: field.startsWith("price") ? (parseFloat(value) || null) : value };
-    await persist({ ...data, journal });
-  };
-
   const sel = selStock ? computed.find(s => s.ticker === selStock) : null;
   const generalHeadlines = (data.headlines || []).filter(h => h.sector === "General");
   const sectorHeadlines = (data.headlines || []).filter(h => h.sector !== "General");
-  const journal = data.journal || [];
-  const reviewed = journal.filter(j => j.priceReview != null && j.priceScreen != null);
-  const avgReturn = reviewed.length ? reviewed.reduce((a, j) => a + (j.priceReview - j.priceScreen) / j.priceScreen * 100, 0) / reviewed.length : null;
-  const goEntries = reviewed.filter(j => j.decision === "GO");
-  const goAvg = goEntries.length ? goEntries.reduce((a, j) => a + (j.priceReview - j.priceScreen) / j.priceScreen * 100, 0) / goEntries.length : null;
-  const thesisYes = journal.filter(j => j.thesisHeld === "Yes").length, thesisTotal = journal.filter(j => j.thesisHeld).length;
-  const inp = { width: "100%", background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: 6, marginTop: 4, boxSizing: "border-box", fontFamily: "inherit" };
+  const inp = { width: "100%", background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 6, marginTop: 4, boxSizing: "border-box", fontFamily: "inherit" };
+  const wide = useWide();
+  const NAV_ITEMS = [["cockpit", "Cockpit", Gauge], ["desk", "Trading desk", LayoutList], ["positions", "Positions", Briefcase], ["config", "Config", Settings]];
+  const goRoom = r => { setRoom(r); if (r !== "desk") { setSelStock(null); setSelCluster(null); } };
 
   return (
-    <div style={{ fontFamily: "'Segoe UI', system-ui, sans-serif", background: COLORS.bg, minHeight: "100vh", color: COLORS.text }}>
-      {/* NAV */}
-      <div style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: `1px solid ${COLORS.border}`, gap: 14, flexWrap: "wrap" }}>
-        <div style={{ fontWeight: 800, fontSize: 17 }}>⚡ THE SCREENER</div>
-        {[["cockpit", "🛩 Cockpit"], ["desk", "📋 Trading Desk"], ["positions", "💼 Positions"], ["journal", "📓 Journal"], ["lab", "🧪 Lab"]].map(([r, lbl]) => (
-          <button key={r} onClick={() => { setRoom(r); if (r !== "desk") { setSelStock(null); setSelCluster(null); } }}
-            style={{ background: room === r ? COLORS.panelLight : "transparent", color: room === r ? COLORS.gold : COLORS.dim, border: `1px solid ${room === r ? COLORS.gold : "transparent"}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{lbl}</button>
-        ))}
-        <div style={{ flex: 1 }} />
-        <button onClick={exportAll} title="Download a full backup of everything" style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬇ Export</button>
-        <button onClick={() => document.getElementById("importFileInput")?.click()} title="Restore from a backup file" style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬆ Import</button>
-        <button onClick={() => { setSyncModal(true); setSyncError(""); }} title="Paste a JSON block from Claude" style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.blue}`, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>⬇ Sync</button>
-        <input id="importFileInput" type="file" accept=".json,application/json" style={{ display: "none" }} onChange={e => { importAll(e.target.files && e.target.files[0]); e.target.value = ""; }} />
-        <button onClick={snapshotToJournal} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>📸 Snapshot week</button>
-        <button onClick={() => { setShowAdd(true); setFetchMsg(""); }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "7px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>＋ Add ticker</button>
-      </div>
+    <div style={{ fontFamily: "'Outfit', 'Segoe UI', system-ui, sans-serif", fontVariantNumeric: "tabular-nums", background: COLORS.bg, minHeight: "100vh", color: COLORS.text }}>
+      <style>{GLOBAL_CSS}</style>
+      <div style={{ display: "flex", minHeight: "100vh", alignItems: "stretch" }}>
 
-      {/* FETCH STATUS TOAST */}
-      {fetchMsg && (
-        <div onClick={() => setFetchMsg("")} style={{ background: COLORS.panelLight, borderBottom: `1px solid ${COLORS.border}`, padding: "8px 20px", fontSize: 12, color: COLORS.text, cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
-          <span style={{ color: COLORS.blue }}>LSEG</span><span>{fetchMsg}</span><span style={{ marginLeft: "auto", color: COLORS.dim }}>dismiss ✕</span>
+      {/* SIDEBAR (wide screens) */}
+      {wide && (
+        <aside style={{ width: 218, flexShrink: 0, borderRight: `1px solid ${COLORS.border}`, padding: "22px 14px", display: "flex", flexDirection: "column", gap: 3, position: "sticky", top: 0, alignSelf: "flex-start", height: "100vh", boxSizing: "border-box" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 10px 22px" }}>
+            <div style={{ width: 32, height: 32, borderRadius: 10, background: `${COLORS.gold}1A`, border: `1px solid ${COLORS.gold}55`, boxShadow: glow(COLORS.gold, 10), display: "flex", alignItems: "center", justifyContent: "center" }}><Zap size={15} color={COLORS.gold} /></div>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 14.5, letterSpacing: "-0.01em", lineHeight: 1.15 }}>The Screener</div>
+              <div style={{ fontSize: 10.5, color: COLORS.dim }}>micro-cap radar</div>
+            </div>
+          </div>
+          {NAV_ITEMS.map(([r, lbl, I]) => (
+            <button key={r} onClick={() => goRoom(r)} style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left", background: room === r ? COLORS.panelLight : "transparent", color: room === r ? COLORS.text : COLORS.dim, border: "none", borderRadius: 11, padding: "10px 12px", cursor: "pointer", fontSize: 13.5, fontWeight: 600, fontFamily: "inherit" }}>
+              <I size={17} strokeWidth={2.1} color={room === r ? COLORS.gold : COLORS.dim} /> {lbl}
+            </button>
+          ))}
+          <div style={{ flex: 1 }} />
+          <div style={{ fontSize: 11, color: COLORS.dim, padding: "0 12px", lineHeight: 1.7 }}>
+            {data.stocks.length} on the board<br />{positions.length} held{data.portfolio ? ` · imported ${data.portfolio.date.slice(5)}` : ""}
+          </div>
+        </aside>
+      )}
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+
+      {/* TOP BAR (narrow screens) */}
+      {!wide && (
+        <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}`, gap: 8, overflowX: "auto" }}>
+          <div style={{ width: 28, height: 28, minWidth: 28, borderRadius: 9, background: `${COLORS.gold}1A`, border: `1px solid ${COLORS.gold}55`, display: "flex", alignItems: "center", justifyContent: "center" }}><Zap size={13} color={COLORS.gold} /></div>
+          {NAV_ITEMS.map(([r, lbl, I]) => (
+            <button key={r} onClick={() => goRoom(r)} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: room === r ? COLORS.panelLight : "transparent", color: room === r ? COLORS.text : COLORS.dim, border: `1px solid ${room === r ? COLORS.border : "transparent"}`, borderRadius: 999, padding: "6px 14px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", fontFamily: "inherit" }}><I size={14} color={room === r ? COLORS.gold : COLORS.dim} /> {lbl}</button>
+          ))}
         </div>
       )}
 
-      {/* ADD TICKER MODAL */}
-      {showAdd && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.gold}`, borderRadius: 14, padding: 24, width: "min(460px, 92vw)" }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>＋ Add a ticker</div>
-            <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 14 }}>Enter a ticker and the app pulls the quant from LSEG (price, balance sheet, analysts, insider, peers). Catalyst and the qualitative scores you add afterward. Anything LSEG misses, you fill by hand.</div>
-            <label style={{ fontSize: 11, color: COLORS.dim }}>Ticker (required)<br />
-              <input autoFocus value={newTicker} onChange={e => setNewTicker(e.target.value)} placeholder="e.g. GROY" onKeyDown={e => { if (e.key === "Enter" && newTicker.trim()) addStock(); }} style={{ ...inp, textTransform: "uppercase" }} /></label>
-            <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-              <label style={{ fontSize: 11, color: COLORS.dim, flex: 1 }}>Name (optional)<br /><input value={newName} onChange={e => setNewName(e.target.value)} placeholder="auto from LSEG" style={inp} /></label>
-              <label style={{ fontSize: 11, color: COLORS.dim, flex: 1 }}>Sector (optional)<br /><input value={newSector} onChange={e => setNewSector(e.target.value)} placeholder="e.g. Gold" style={inp} /></label>
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
-              <button onClick={() => { setShowAdd(false); setNewTicker(""); setNewName(""); setNewSector(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 16px", cursor: "pointer" }}>Cancel</button>
-              <button onClick={addStock} disabled={fetchingTicker === "__add__" || !newTicker.trim()} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "8px 18px", cursor: fetchingTicker === "__add__" ? "wait" : "pointer", fontWeight: 700, opacity: !newTicker.trim() ? 0.5 : 1 }}>{fetchingTicker === "__add__" ? "Fetching from LSEG…" : "Add & fetch"}</button>
-            </div>
-          </div>
+      {/* STATUS TOAST */}
+      {fetchMsg && (
+        <div onClick={() => setFetchMsg("")} style={{ margin: "14px 26px 0", background: COLORS.panelLight, border: `1px solid ${COLORS.blue}44`, borderRadius: 12, boxShadow: glow(COLORS.blue, 12), padding: "9px 16px", fontSize: 12.5, color: COLORS.text, cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
+          <Zap size={14} color={COLORS.blue} style={{ minWidth: 14 }} /><span>{fetchMsg}</span><X size={13} color={COLORS.dim} style={{ marginLeft: "auto", minWidth: 13 }} />
         </div>
       )}
 
       {/* BRIEF MODAL */}
       {briefModal && (() => {
-        const s = computed.find(x => x.ticker === briefModal); const text = buildBrief(s);
+        const isMarket = briefModal.mode === "market", isPortfolio = briefModal.mode === "portfolio";
+        const s = isMarket || isPortfolio ? null : computed.find(x => x.ticker === briefModal.ticker);
+        const text = isPortfolio ? buildPortfolioBrief() : isMarket ? buildMarketBrief() : buildBrief(s, briefModal.mode);
+        const isDiscuss = briefModal.mode === "discuss";
+        const accent = isMarket || isPortfolio ? COLORS.blue : isDiscuss ? COLORS.green : COLORS.gold;
         return (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.green}`, borderRadius: 14, padding: 24, width: "min(720px, 94vw)" }}>
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>💬 Discuss {briefModal} with Claude</div>
-              <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>Copy this and paste into any Claude chat (even a brand-new one — this is how context survives a full conversation). We discuss, then Claude hands you a JSON block. Paste that into "Sync Claude's scores" to load it.</div>
-              <textarea id="briefTextArea" readOnly value={text} onFocus={e => e.target.select()} style={{ ...inp, height: 280, fontSize: 11, fontFamily: "monospace" }} />
+            <div style={{ background: COLORS.panel, border: `1px solid ${accent}`, borderRadius: 18, padding: 24, width: "min(720px, 94vw)" }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>{isPortfolio ? "💼 Portfolio import brief" : isMarket ? "🌍 Market update brief" : isDiscuss ? `💬 Discuss ${briefModal.ticker} with Claude` : `📤 Update scan brief — ${briefModal.ticker}`}</div>
+              <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>{isPortfolio
+                ? "Copy this into any Claude chat and ATTACH a screenshot of your broker holdings (IBKR positions page works great). The skill transcribes every row and returns a portfolio_update block — paste it back via Paste portfolio and the book reconciles itself."
+                : isMarket
+                ? "Copy this into any Claude chat. The skill refreshes the macro tiles, reads each sector, pulls the week's headlines and hands back a market_update block. Paste it back via Paste market. Want to skip a sector this pass? Add an EXCLUDE: line before sending."
+                : isDiscuss
+                ? "Copy this into any Claude chat and argue it out — scores, thesis, overrides. Claude has the full prior state and won't emit JSON until you say finalize. When you do, paste the update_scan block back via Paste result."
+                : "Copy this into any Claude chat. The skill re-researches the stock against this prior state, works the watch list, and hands back an update_scan block. Paste that back via Paste result — the app draws the diff and freezes a snapshot."}</div>
+              <textarea id="briefTextArea" readOnly value={text} onFocus={e => e.target.select()} style={{ ...inp, height: isMarket || isPortfolio ? 120 : 280, fontSize: 11, fontFamily: "monospace" }} />
               <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end", alignItems: "center" }}>
                 {copyMsg && <span style={{ fontSize: 12, color: COLORS.green }}>{copyMsg}</span>}
-                <button onClick={() => copyText(text)} style={{ background: COLORS.green, color: "#0E1420", border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>📋 Copy</button>
-                <button onClick={() => { setBriefModal(null); setCopyMsg(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 16px", cursor: "pointer" }}>Close</button>
+                <button onClick={() => copyText(text)} style={{ background: accent, color: "#0E1420", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>📋 Copy</button>
+                <button onClick={() => { setBriefModal(null); setCopyMsg(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 16px", cursor: "pointer" }}>Close</button>
               </div>
             </div>
           </div>
@@ -913,14 +964,14 @@ export default function App() {
       {/* SYNC MODAL */}
       {syncModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 14, padding: 24, width: "min(720px, 94vw)" }}>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 18, padding: 24, width: "min(720px, 94vw)" }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Sync from Claude</div>
-            <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>Paste any JSON block Claude returns — a <code style={{ color: COLORS.blue }}>weekly_update</code> (whole board: macro, headlines, sectors, every ticker), a <code style={{ color: COLORS.blue }}>stock_update</code> (one stock, quant + catalyst + quals; new tickers get added), or an old qual-only block. The app detects which it is and merges. Manual values survive: only fields present in the block are overwritten.</div>
+            <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>Paste any JSON block Claude returns — a <code style={{ color: COLORS.blue }}>full_scan</code> (adds or overwrites a stock with the deep dossier), an <code style={{ color: COLORS.blue }}>update_scan</code> (refreshes a tracked stock, draws the diff, freezes a snapshot — also what a finalized DISCUSS emits), a <code style={{ color: COLORS.blue }}>weekly_update</code>, a <code style={{ color: COLORS.blue }}>stock_update</code>, or an old qual-only block. Manual values survive: only fields present in the block are overwritten.</div>
             <textarea value={syncText} onChange={e => { setSyncText(e.target.value); setSyncError(""); }} placeholder='{"ticker":"ATYR","G":[...],"H":[...],"I":[...]}' style={{ ...inp, height: 200, fontSize: 11, fontFamily: "monospace" }} />
             {syncError && <div style={{ color: COLORS.red, fontSize: 12, marginTop: 8 }}>⚠️ {syncError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
-              <button onClick={() => { setSyncModal(false); setSyncText(""); setSyncError(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 16px", cursor: "pointer" }}>Cancel</button>
-              <button onClick={applySync} style={{ background: COLORS.blue, color: "#0E1420", border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>Apply block</button>
+              <button onClick={() => { setSyncModal(false); setSyncText(""); setSyncError(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 16px", cursor: "pointer" }}>Cancel</button>
+              <button onClick={applySync} style={{ background: COLORS.blue, color: "#0E1420", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>Apply block</button>
             </div>
           </div>
         </div>
@@ -928,47 +979,70 @@ export default function App() {
 
       {/* ══ COCKPIT ══ */}
       {room === "cockpit" && (
-        <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
+        <div className="room" style={{ padding: "26px 28px 48px", maxWidth: 1080, margin: "0 auto" }}>
+          <PageHeader title="Cockpit" sub={`The macro backdrop and this week's signal${data.macroDate ? ` · updated ${data.macroDate}` : ""}`}>
+            <Btn icon={Upload} accent={COLORS.gold} onClick={() => { setBriefModal({ ticker: null, mode: "market" }); setCopyMsg(""); }}>Market brief</Btn>
+            <Btn icon={ClipboardPaste} accent={COLORS.blue} onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste market</Btn>
+          </PageHeader>
+          <Eyebrow>Macro — tap a tile for the rule, or set a value by hand</Eyebrow>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {macro.tiles.map(t => (
-              <div key={t.key} onClick={() => setDrillTile(drillTile === t.key ? null : t.key)} style={{ flex: "1 1 120px", background: COLORS.panel, border: `1px solid ${drillTile === t.key ? tileColor(t.color) : COLORS.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer", position: "relative" }}>
+              <div key={t.key} className="hcard" onClick={() => setDrillTile(drillTile === t.key ? null : t.key)} style={{ flex: "1 1 120px", background: COLORS.panel, border: `1px solid ${drillTile === t.key ? tileColor(t.color) : COLORS.border}`, borderRadius: 14, padding: "10px 12px", cursor: "pointer", position: "relative" }}>
                 <a href={MACRO_LINKS[t.key]} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="Open source" style={{ position: "absolute", top: 8, right: 8, color: COLORS.dim, textDecoration: "none", fontSize: 12 }}>↗</a>
                 <div style={{ fontSize: 11, color: COLORS.dim }}>{t.label}</div>
                 <div style={{ fontSize: 19, fontWeight: 700, color: tileColor(t.color) }}>{t.val ?? "—"}</div>
                 <div style={{ fontSize: 10, color: COLORS.dim }}>{t.note}</div>
-                {drillTile === t.key && <div style={{ fontSize: 10, color: COLORS.gold, marginTop: 6, borderTop: `1px solid ${COLORS.border}`, paddingTop: 6 }}>Rule: {t.rule}</div>}
+                {drillTile === t.key && (
+                  <div onClick={e => e.stopPropagation()} style={{ fontSize: 10, color: COLORS.gold, marginTop: 6, borderTop: `1px solid ${COLORS.border}`, paddingTop: 6 }}>
+                    Rule: {t.rule}
+                    <input type="number" step="any" defaultValue={t.val ?? ""} placeholder="set value" onKeyDown={e => { if (e.key === "Enter") { updateMacro(t.key, e.target.value); setDrillTile(null); } }} onBlur={e => { if (e.target.value !== String(t.val ?? "")) updateMacro(t.key, e.target.value); }} style={{ ...inp, marginTop: 6, fontSize: 12, padding: 4 }} />
+                  </div>
+                )}
               </div>
             ))}
-            <div style={{ flex: "1.4 1 200px", background: COLORS.panel, border: `2px solid ${macro.temp.color}`, borderRadius: 10, padding: "10px 14px" }}>
+            <div style={{ flex: "1.4 1 200px", background: COLORS.panel, border: `2px solid ${macro.temp.color}`, borderRadius: 14, padding: "10px 14px" }}>
               <div style={{ fontSize: 11, color: COLORS.dim }}>MARKET TEMPERATURE</div>
               <div style={{ fontSize: 22, fontWeight: 800, color: macro.temp.color }}>{macro.temp.label}</div>
               <div style={{ fontSize: 11 }}>{macro.temp.advice}</div>
             </div>
           </div>
+          {data.marketRead && <div style={{ marginTop: 10, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 14px", fontSize: 12, lineHeight: 1.55 }}>🌍 <b>The backdrop:</b> {data.marketRead}</div>}
           <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.dim, letterSpacing: 1 }}>THIS WEEK — GENERAL MARKET</div>
-            <button onClick={fetchHeadlines} disabled={headlinesLoading} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>{headlinesLoading ? "Searching the week's news…" : "🔄 Refresh All Headlines"}</button>
             {data.headlinesDate && <span style={{ fontSize: 10, color: COLORS.dim }}>updated {data.headlinesDate}</span>}
           </div>
-          {generalHeadlines.length > 0 ? <HeadlineList items={generalHeadlines} /> : <div style={{ marginTop: 8, fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>No headlines yet — hit Refresh and the app searches the week's news itself.</div>}
+          {generalHeadlines.length > 0 ? <HeadlineList items={generalHeadlines} /> : <div style={{ marginTop: 8, fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>No headlines yet — run a Market brief through the skill and paste the block back.</div>}
 
           <div style={{ marginTop: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 8 }}>SECTOR PULSE</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+              <Eyebrow style={{ marginBottom: 0 }}>Sector pulse</Eyebrow>
+              <button onClick={() => setSectorEdit(!sectorEdit)} style={{ background: "transparent", color: sectorEdit ? COLORS.gold : COLORS.dim, border: `1px solid ${sectorEdit ? COLORS.gold : COLORS.border}`, borderRadius: 9, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>{sectorEdit ? "done" : "✎ edit"}</button>
+            </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               {data.sectors.map(s => (
-                <div key={s.name} style={{ flex: "1 1 120px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 12px", position: "relative" }}>
-                  <a href={etfLink(s.etf)} target="_blank" rel="noopener noreferrer" title="Open ETF chart" style={{ position: "absolute", top: 6, right: 8, color: COLORS.dim, textDecoration: "none", fontSize: 12 }}>↗</a>
+                <div key={s.name} style={{ flex: "1 1 150px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "8px 12px", position: "relative" }}>
+                  {sectorEdit
+                    ? <button onClick={() => removeSector(s.name)} title="Remove sector" style={{ position: "absolute", top: 6, right: 8, background: "transparent", color: COLORS.red, border: "none", cursor: "pointer", fontSize: 13 }}>✕</button>
+                    : <a href={etfLink(s.etf)} target="_blank" rel="noopener noreferrer" title="Open ETF chart" style={{ position: "absolute", top: 6, right: 8, color: COLORS.dim, textDecoration: "none", fontSize: 12 }}>↗</a>}
                   <div style={{ fontSize: 12, fontWeight: 700 }}>{s.name} <span style={{ color: COLORS.dim, fontWeight: 400, fontSize: 10 }}>{s.etf}</span></div>
                   <Delta v={s.change} suffix="%" />
+                  {s.read && <div style={{ fontSize: 10, color: COLORS.dim, marginTop: 4, lineHeight: 1.4 }}>{s.read}</div>}
                 </div>
               ))}
+              {sectorEdit && (
+                <div style={{ flex: "1 1 200px", background: COLORS.bg, border: `1px dashed ${COLORS.border}`, borderRadius: 14, padding: "8px 12px", display: "grid", gap: 6 }}>
+                  <input id="newSectorName" placeholder="Sector name" style={{ ...inp, marginTop: 0, fontSize: 12, padding: 5 }} />
+                  <input id="newSectorEtf" placeholder="ETF proxy (e.g. URA)" style={{ ...inp, marginTop: 0, fontSize: 12, padding: 5, textTransform: "uppercase" }} />
+                  <button onClick={() => { const n = document.getElementById("newSectorName"), e = document.getElementById("newSectorEtf"); addSector(n.value, e.value); n.value = ""; e.value = ""; }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 9, padding: "5px 0", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>＋ Add sector</button>
+                </div>
+              )}
             </div>
             <HeadlineList items={sectorHeadlines} />
           </div>
 
           <div style={{ marginTop: 20 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 8 }}>NEEDS ATTENTION</div>
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "hidden" }}>
               {attention.length === 0 ? <div style={{ padding: 18, textAlign: "center", color: COLORS.green, fontWeight: 600 }}>✨ Nothing urgent. All positions stable.</div>
                 : attention.map((a, i) => (
                   <div key={i} onClick={() => openDesk(a.ticker)} style={{ display: "flex", gap: 10, padding: "10px 14px", borderBottom: i < attention.length - 1 ? `1px solid ${COLORS.border}` : "none", cursor: "pointer", alignItems: "center" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
@@ -980,7 +1054,7 @@ export default function App() {
 
           <div style={{ marginTop: 20 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 8 }}>THE BOARD — ranked by score · tap to open analysis</div>
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "auto" }}>
+            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "auto" }}>
               <div style={{ minWidth: 720 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 65px 75px 60px 85px 85px 95px", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
                   <span>TICKER</span><span>NAME</span><span>SCORE</span><span>Δ WEEK</span><span>SIGNAL</span><span>CATALYST</span><span>PRICE Δ</span><span>DECISION</span>
@@ -989,12 +1063,12 @@ export default function App() {
                   const delta = s.prevScore != null ? s.calc.composite - s.prevScore : null;
                   const pxDelta = s.prevPrice != null && s.price != null ? (s.price - s.prevPrice) / s.prevPrice * 100 : null;
                   return (
-                    <div key={s.ticker} onClick={() => openDesk(s.ticker)} style={{ display: "grid", gridTemplateColumns: "70px 1fr 65px 75px 60px 85px 85px 95px", gap: 8, padding: "10px 14px", fontSize: 13, alignItems: "center", borderBottom: i < sorted.length - 1 ? `1px solid ${COLORS.border}` : "none", cursor: "pointer" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                    <div key={s.ticker} onClick={() => openDesk(s.ticker)} className="hcard" style={{ display: "grid", gridTemplateColumns: "70px 1fr 65px 75px 60px 85px 85px 95px", gap: 8, padding: "10px 14px", fontSize: 13, alignItems: "center", borderBottom: i < sorted.length - 1 ? `1px solid ${COLORS.border}` : "none", cursor: "pointer" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
                       <span style={{ fontWeight: 800 }}>{s.ticker}{s.held && s.entryPrice != null && <span style={{ color: COLORS.gold }} title="Open position"> ●</span>}</span>
                       <span style={{ color: COLORS.dim, fontSize: 12 }}>{s.name}</span>
                       <span style={{ fontWeight: 700, color: decColor(s.calc.decision) }}>{s.calc.composite.toFixed(1)}</span>
                       <Delta v={delta} />
-                      <span style={{ width: 12, height: 12, borderRadius: "50%", background: sigColor(s.calc.sigLevel), display: "inline-block" }} />
+                      <span style={{ width: 12, height: 12, borderRadius: "50%", background: sigColor(s.calc.sigLevel), boxShadow: glow(sigColor(s.calc.sigLevel), 10), display: "inline-block" }} />
                       <span style={{ fontSize: 12, color: s.calc.daysToCatalyst != null && s.calc.daysToCatalyst <= 7 ? COLORS.yellow : COLORS.dim }}>{s.calc.daysToCatalyst != null ? `${s.calc.daysToCatalyst}d` : "—"}</span>
                       <Delta v={pxDelta} suffix="%" />
                       <span style={{ fontSize: 11, fontWeight: 700, color: decColor(s.calc.decision) }}>{s.calc.decision === "DISQUALIFIED" ? "❌ DQ" : s.calc.decision === "GO" ? "✅ GO" : s.calc.decision === "WATCH" ? "👁 WATCH" : "❌ NO-GO"}</span>
@@ -1005,81 +1079,135 @@ export default function App() {
             </div>
           </div>
 
-          <div onClick={() => setRoom("journal")} style={{ marginTop: 20, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 16px", fontSize: 12, color: COLORS.dim, cursor: "pointer", display: "flex", gap: 16, flexWrap: "wrap" }}>
-            <span>📓 <b style={{ color: COLORS.text }}>Journal:</b></span>
-            {avgReturn != null && <span>reviewed picks avg <b style={{ color: avgReturn >= 0 ? COLORS.green : COLORS.red }}>{avgReturn >= 0 ? "+" : ""}{avgReturn.toFixed(1)}%</b></span>}
-            {thesisTotal > 0 && <span>thesis hit rate <b style={{ color: COLORS.gold }}>{thesisYes}/{thesisTotal}</b></span>}
-            <span style={{ marginLeft: "auto" }}>Open Journal →</span>
-          </div>
         </div>
       )}
 
       {/* ══ POSITIONS ══ */}
-      {room === "positions" && (
-        <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 8 }}>OPEN POSITIONS — {positions.length} held · entries mirrored from IBKR</div>
-          {positions.length === 0 ? <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, color: COLORS.dim, fontSize: 13 }}>No open positions. Use the <b>Add</b> verdict on a stock's Trading Desk card to open one.</div> : (
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "auto" }}>
-              <div style={{ minWidth: 760 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 80px 80px 70px 80px 70px 70px 80px", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
-                  <span>TICKER</span><span>NAME</span><span>ENTRY</span><span>CURRENT</span><span>P&L %</span><span>SHARES</span><span>SCORE</span><span>SIGNAL</span><span>DECISION</span>
-                </div>
-                {positions.map((s, i) => {
-                  const pnl = s.entryPrice ? (s.price - s.entryPrice) / s.entryPrice * 100 : null;
-                  return (
-                    <div key={s.ticker} onClick={() => openDesk(s.ticker)} style={{ display: "grid", gridTemplateColumns: "70px 1fr 80px 80px 70px 80px 70px 70px 80px", gap: 8, padding: "10px 14px", fontSize: 13, alignItems: "center", borderBottom: i < positions.length - 1 ? `1px solid ${COLORS.border}` : "none", cursor: "pointer" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
-                      <span style={{ fontWeight: 800 }}>{s.ticker}</span>
-                      <span style={{ color: COLORS.dim, fontSize: 12 }}>{s.name}<br /><span style={{ fontSize: 10 }}>since {s.entryDate}</span></span>
-                      <span>${s.entryPrice?.toFixed(2)}</span>
-                      <span>${s.price?.toFixed(2)}</span>
-                      <span style={{ fontWeight: 700, color: pnl >= 0 ? COLORS.green : COLORS.red }}>{pnl != null ? `${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}%` : "—"}</span>
-                      <span style={{ color: COLORS.dim }}>{s.shares ?? "—"}</span>
-                      <span style={{ fontWeight: 700, color: decColor(s.calc.decision) }}>{s.calc.composite.toFixed(1)}</span>
-                      <span style={{ width: 12, height: 12, borderRadius: "50%", background: sigColor(s.calc.sigLevel), display: "inline-block" }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: decColor(s.calc.decision) }}>{s.calc.decision}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+      {room === "positions" && (() => {
+        const pf = data.portfolio || null;
+        const pfStocks = (pf?.positions || []).filter(p => (p.kind || "stock") === "stock");
+        const totVal = (pf?.positions || []).reduce((a, p) => a + (p.marketValue || 0), 0);
+        const totPL = (pf?.positions || []).reduce((a, p) => a + (p.unrealizedPL || 0), 0);
+        const boardByTicker = Object.fromEntries(computed.map(s => [s.ticker, s]));
+        // Reconciliation flags: broker reality vs board verdicts
+        const flags = [];
+        computed.forEach(s => {
+          const call = s.claudeScan?.verdict?.call, hz = s.claudeScan?.verdict?.horizon;
+          const inImport = pfStocks.some(p => (p.ticker || "").toUpperCase() === s.ticker);
+          if (s.held && call === "EXIT") flags.push({ lvl: "RED", t: s.ticker, msg: "Verdict says EXIT — you're still holding" });
+          else if (s.held && call === "TRIM") flags.push({ lvl: "YELLOW", t: s.ticker, msg: "Verdict says TRIM — position untouched" });
+          else if (s.held && call === "RIDE_HYPE") flags.push({ lvl: "GOLD", t: s.ticker, msg: `Riding hype — exit discipline: ${hz || "no horizon set"}` });
+          else if (s.held && call === "HOLD_TO_CATALYST") flags.push({ lvl: "INFO", t: s.ticker, msg: `Holding for the catalyst — ${s.calc.daysToCatalyst != null ? `${s.calc.daysToCatalyst}d out` : "no date"}${hz ? ` (${hz})` : ""}` });
+          if (!s.held && call === "ADD") flags.push({ lvl: "GREEN", t: s.ticker, msg: "Verdict says ADD — you're not holding" });
+          if (s.held && !s.claudeScan) flags.push({ lvl: "YELLOW", t: s.ticker, msg: "Held but never screened — no vetoes, no scores" });
+          if (s.held && pf && !inImport) flags.push({ lvl: "YELLOW", t: s.ticker, msg: "Marked held here but absent from the last import — sold, or partial screenshot?" });
+        });
+        pfStocks.forEach(p => {
+          const t = (p.ticker || "").toUpperCase();
+          if (!boardByTicker[t]) flags.push({ lvl: "YELLOW", t, msg: `In your portfolio but not on the board — never screened${p.marketValue ? ` ($${Math.round(p.marketValue).toLocaleString()} exposure)` : ""}. Run a FULL SCAN.` });
+        });
+        const flagColor = { RED: COLORS.red, YELLOW: COLORS.yellow, GOLD: COLORS.gold, GREEN: COLORS.green, INFO: COLORS.blue };
+        return (
+          <div className="room" style={{ padding: "26px 28px 48px", maxWidth: 1080, margin: "0 auto" }}>
+            <PageHeader title="Positions" sub={pf ? `Broker book vs the board · imported ${pf.date}` : "Broker book vs the board"}>
+              <Btn icon={Upload} accent={COLORS.gold} onClick={() => { setBriefModal({ ticker: null, mode: "portfolio" }); setCopyMsg(""); }}>Portfolio brief</Btn>
+              <Btn icon={ClipboardPaste} accent={COLORS.blue} onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste portfolio</Btn>
+            </PageHeader>
 
-          {(data.closed || []).length > 0 && (
-            <div style={{ marginTop: 22 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 8 }}>CLOSED — booked results</div>
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "auto" }}>
-                <div style={{ minWidth: 700 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 80px 80px 80px 90px 90px 1fr", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
-                    <span>TICKER</span><span>NAME</span><span>ENTRY</span><span>EXIT</span><span>RESULT</span><span>HELD FROM</span><span>CLOSED</span><span>REASON</span>
+            {!pf && <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 18, color: COLORS.dim, fontSize: 13, marginBottom: 14 }}>No portfolio imported yet. Hit <b>Portfolio brief</b>, paste it into Claude with a screenshot of your broker holdings, and paste the block back. The book reconciles itself and the flags below light up.</div>}
+
+            {pf && (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                {[["Market value", `$${Math.round(totVal).toLocaleString()}`, COLORS.text], ["Unrealized P&L", `${totPL >= 0 ? "+" : "-"}$${Math.round(Math.abs(totPL)).toLocaleString()}`, totPL >= 0 ? COLORS.green : COLORS.red], ["Holdings", pf.positions.length, COLORS.text], ...(pf.cash != null ? [["Cash", `$${Math.round(pf.cash).toLocaleString()}`, COLORS.text]] : [])].map(([lbl, val, col], i) => (
+                  <div key={i} style={{ flex: "1 1 140px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 14px" }}>
+                    <div style={{ fontSize: 10, color: COLORS.dim }}>{lbl}</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: col }}>{val}</div>
                   </div>
-                  {(data.closed || []).map((c, i) => (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "70px 1fr 80px 80px 80px 90px 90px 1fr", gap: 8, padding: "10px 14px", fontSize: 12, alignItems: "center", borderBottom: i < data.closed.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
-                      <span style={{ fontWeight: 800 }}>{c.ticker}</span><span style={{ color: COLORS.dim }}>{c.name}</span>
-                      <span>${c.entryPrice?.toFixed(2)}</span><span>${c.exitPrice?.toFixed(2)}</span>
-                      <span style={{ fontWeight: 700, color: c.gainPct >= 0 ? COLORS.green : COLORS.red }}>{c.gainPct != null ? `${c.gainPct >= 0 ? "+" : ""}${c.gainPct}%` : "—"}</span>
-                      <span style={{ color: COLORS.dim }}>{c.entryDate}</span><span style={{ color: COLORS.dim }}>{c.exitDate}</span>
-                      <span style={{ color: COLORS.dim, fontSize: 11 }}>{c.reason}</span>
-                    </div>
-                  ))}
+                ))}
+              </div>
+            )}
+
+            {flags.length > 0 && (
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
+                <Eyebrow style={{ marginBottom: 8 }}>Reconciliation — portfolio vs board</Eyebrow>
+                {flags.map((f, i) => (
+                  <div key={i} onClick={() => boardByTicker[f.t] && openDesk(f.t)} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "5px 0", fontSize: 12, lineHeight: 1.45, cursor: boardByTicker[f.t] ? "pointer" : "default" }}>
+                    <span style={{ width: 10, height: 10, minWidth: 10, borderRadius: "50%", background: flagColor[f.lvl], boxShadow: glow(flagColor[f.lvl], 10), display: "inline-block", position: "relative", top: 1 }} />
+                    <b style={{ minWidth: 52 }}>{f.t}</b>
+                    <span style={{ color: COLORS.text }}>{f.msg}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {pf?.read && <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 14px", fontSize: 12, lineHeight: 1.55, marginBottom: 14 }}>🧭 <b>Claude's read:</b> {pf.read}</div>}
+
+            {pf && (
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "auto", marginBottom: 14 }}>
+                <div style={{ minWidth: 780 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 60px 70px 80px 100px 90px 70px 90px", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <span>TICKER</span><span>NAME</span><span>KIND</span><span>QTY</span><span>AVG</span><span>MKT VALUE</span><span>UNRLZD P&L</span><span>SCORE</span><span>VERDICT</span>
+                  </div>
+                  {pf.positions.map((p, i) => {
+                    const t = (p.ticker || "").toUpperCase(); const b = (p.kind || "stock") === "stock" ? boardByTicker[t] : null;
+                    const call = b?.claudeScan?.verdict?.call;
+                    return (
+                      <div key={i} onClick={() => b && openDesk(t)} className="hcard" style={{ display: "grid", gridTemplateColumns: "80px 1fr 60px 70px 80px 100px 90px 70px 90px", gap: 8, padding: "10px 14px", fontSize: 12, alignItems: "center", borderBottom: i < pf.positions.length - 1 ? `1px solid ${COLORS.border}` : "none", cursor: b ? "pointer" : "default" }} onMouseEnter={e => b && (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                        <span style={{ fontWeight: 800 }}>{t}</span>
+                        <span style={{ color: COLORS.dim, fontSize: 11 }}>{p.label || p.name || ""}</span>
+                        <span style={{ color: COLORS.dim, fontSize: 10, textTransform: "uppercase" }}>{p.kind || "stock"}</span>
+                        <span>{p.qty ?? "—"}</span>
+                        <span>{p.avgPrice != null ? `$${p.avgPrice}` : "—"}</span>
+                        <span>{p.marketValue != null ? `$${Math.round(p.marketValue).toLocaleString()}` : "—"}</span>
+                        <span style={{ fontWeight: 700, color: (p.unrealizedPL || 0) >= 0 ? COLORS.green : COLORS.red }}>{p.unrealizedPL != null ? `${p.unrealizedPL >= 0 ? "+" : "-"}$${Math.round(Math.abs(p.unrealizedPL)).toLocaleString()}` : "—"}</span>
+                        <span style={{ fontWeight: 700, color: b ? decColor(b.calc.decision) : COLORS.dim }}>{b ? b.calc.composite.toFixed(1) : "—"}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: b && call ? (call === "ADD" ? COLORS.green : call === "EXIT" ? COLORS.red : call === "TRIM" ? COLORS.yellow : call === "RIDE_HYPE" ? COLORS.gold : COLORS.blue) : COLORS.dim }}>{b ? (call ? call.split("_").join(" ") : "unscanned") : "off-board"}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+
+            {(data.closed || []).length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <Eyebrow>Closed — booked results</Eyebrow>
+                <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "auto" }}>
+                  <div style={{ minWidth: 700 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 80px 80px 80px 90px 90px 1fr", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
+                      <span>TICKER</span><span>NAME</span><span>ENTRY</span><span>EXIT</span><span>RESULT</span><span>HELD FROM</span><span>CLOSED</span><span>REASON</span>
+                    </div>
+                    {(data.closed || []).map((c, i) => (
+                      <div key={i} style={{ display: "grid", gridTemplateColumns: "70px 1fr 80px 80px 80px 90px 90px 1fr", gap: 8, padding: "10px 14px", fontSize: 12, alignItems: "center", borderBottom: i < data.closed.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+                        <span style={{ fontWeight: 800 }}>{c.ticker}</span><span style={{ color: COLORS.dim }}>{c.name}</span>
+                        <span>${c.entryPrice?.toFixed(2)}</span><span>${c.exitPrice?.toFixed(2)}</span>
+                        <span style={{ fontWeight: 700, color: c.gainPct >= 0 ? COLORS.green : COLORS.red }}>{c.gainPct != null ? `${c.gainPct >= 0 ? "+" : ""}${c.gainPct}%` : "—"}</span>
+                        <span style={{ color: COLORS.dim }}>{c.entryDate}</span><span style={{ color: COLORS.dim }}>{c.exitDate}</span>
+                        <span style={{ color: COLORS.dim, fontSize: 11 }}>{c.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ══ TRADING DESK ══ */}
       {room === "desk" && (
-        <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
+        <div className="room" style={{ padding: "26px 28px 48px", maxWidth: 1080, margin: "0 auto" }}>
           {!sel ? (
             <>
-              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 12 }}>POSITIONS & WATCHLIST — tap a card to open the analysis</div>
+              <PageHeader title="Trading desk" sub="Positions and watchlist — tap a card to open the analysis">
+                <Btn icon={ClipboardPaste} accent={COLORS.blue} title="Paste a full_scan JSON to add or refresh a stock" onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste full scan</Btn>
+              </PageHeader>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(310px, 1fr))", gap: 14 }}>
                 {sorted.map(s => {
                   const delta = s.prevScore != null ? s.calc.composite - s.prevScore : null;
                   const pxE = s.held && s.entryPrice ? (s.price - s.entryPrice) / s.entryPrice * 100 : null;
                   return (
-                    <div key={s.ticker} onClick={() => openDesk(s.ticker)} style={{ background: COLORS.panel, border: `1px solid ${s.calc.sigLevel === "RED" ? COLORS.red : COLORS.border}`, borderRadius: 14, padding: 16, cursor: "pointer" }}>
+                    <div key={s.ticker} className="hcard" onClick={() => openDesk(s.ticker)} style={{ background: COLORS.panel, border: `1px solid ${s.calc.sigLevel === "RED" ? COLORS.red : COLORS.border}`, boxShadow: s.calc.sigLevel === "RED" ? glow(COLORS.red, 14) : "none", borderRadius: 18, padding: 16, cursor: "pointer" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                         <ScoreRing score={s.calc.composite} decision={s.calc.decision} />
                         <div style={{ flex: 1 }}>
@@ -1103,15 +1231,15 @@ export default function App() {
           ) : selCluster == null && !histDate ? (
             <>
               <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-                <button onClick={() => setSelStock(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← All positions</button>
+                <button onClick={() => setSelStock(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← All positions</button>
                 <span style={{ fontSize: 12, color: COLORS.dim }}>Tap any cluster bar to go deeper → evidence</span>
                 <div style={{ flex: 1 }} />
-                <button onClick={() => refreshQuant(sel.ticker)} disabled={fetchingTicker === sel.ticker} style={{ background: COLORS.panelLight, color: COLORS.gold, border: `1px solid ${COLORS.gold}`, borderRadius: 8, padding: "5px 14px", cursor: fetchingTicker === sel.ticker ? "wait" : "pointer", fontSize: 12, fontWeight: 600 }}>{fetchingTicker === sel.ticker ? "↻ Fetching…" : "↻ Refresh quant (LSEG)"}</button>
-                <button onClick={() => { setBriefModal(sel.ticker); setCopyMsg(""); }} style={{ background: COLORS.panelLight, color: COLORS.green, border: `1px solid ${COLORS.green}`, borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>💬 Discuss with Claude</button>
-                <button onClick={() => { setSyncModal(true); setSyncError(""); }} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.blue}`, borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>⬇ Sync Claude's scores</button>
+                <button onClick={() => { setBriefModal({ ticker: sel.ticker, mode: "update" }); setCopyMsg(""); }} style={{ background: COLORS.panelLight, color: COLORS.gold, border: `1px solid ${COLORS.gold}`, borderRadius: 10, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>📤 Update brief</button>
+                <button onClick={() => { setBriefModal({ ticker: sel.ticker, mode: "discuss" }); setCopyMsg(""); }} style={{ background: COLORS.panelLight, color: COLORS.green, border: `1px solid ${COLORS.green}`, borderRadius: 10, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>💬 Discuss brief</button>
+                <button onClick={() => { setSyncModal(true); setSyncError(""); }} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.blue}`, borderRadius: 10, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>📥 Paste result</button>
               </div>
 
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 22, marginBottom: 14 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 22, marginBottom: 14 }}>
                 <div style={{ display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
                   <ScoreRing score={sel.calc.composite} size={86} decision={sel.calc.decision} />
                   <div style={{ flex: 1, minWidth: 200 }}>
@@ -1122,9 +1250,9 @@ export default function App() {
                       {sel.held && sel.entryPrice && <span>📍 Entry ${sel.entryPrice} <Delta v={(sel.price - sel.entryPrice) / sel.entryPrice * 100} suffix="%" /></span>}
                       <span style={{ color: sel.calc.daysToCatalyst != null && sel.calc.daysToCatalyst <= 7 ? COLORS.yellow : COLORS.dim }}>⏱ {sel.calc.daysToCatalyst != null ? `${sel.catalystType} in ${sel.calc.daysToCatalyst}d` : "No catalyst set"}</span>
                     </div>
-                    {sel.lastFetch && <div style={{ marginTop: 6, fontSize: 11, color: COLORS.dim }}>LSEG fetched {sel.lastFetch.date}{sel.lastFetch.currency ? ` · ${sel.lastFetch.currency}` : ""}{sel.lastFetch.missing?.length ? ` · missing: ${sel.lastFetch.missing.join(", ")}` : " · all fields"}{sel.lastFetch.notes ? ` · ${sel.lastFetch.notes}` : ""}</div>}
+                    {sel.lastFetch && <div style={{ marginTop: 6, fontSize: 11, color: COLORS.dim }}>Data as of {sel.lastFetch.date}{sel.lastFetch.currency ? ` · ${sel.lastFetch.currency}` : ""}{sel.lastFetch.missing?.length ? ` · missing: ${sel.lastFetch.missing.join(", ")}` : " · all fields"}{sel.lastFetch.notes ? ` · ${sel.lastFetch.notes}` : ""}</div>}
                   </div>
-                  <div style={{ textAlign: "center", padding: "12px 22px", borderRadius: 12, background: COLORS.bg, border: `2px solid ${sigColor(sel.calc.sigLevel)}` }}>
+                  <div style={{ textAlign: "center", padding: "12px 22px", borderRadius: 16, background: COLORS.bg, border: `2px solid ${sigColor(sel.calc.sigLevel)}` }}>
                     <div style={{ fontSize: 10, color: COLORS.dim, letterSpacing: 1 }}>SIGNAL STATUS</div>
                     <div style={{ fontSize: 22, fontWeight: 800, color: sigColor(sel.calc.sigLevel) }}>{sel.calc.sigLevel}</div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: decColor(sel.calc.decision), marginTop: 2 }}>{sel.calc.decision}</div>
@@ -1139,7 +1267,7 @@ export default function App() {
                         <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", padding: "5px 0", fontSize: 13, opacity: overridden ? 0.55 : 1, flexWrap: "wrap" }}>
                           <span style={{ color: sig.level === "RED" ? COLORS.red : sig.level === "STALE" ? COLORS.blue : COLORS.yellow, fontWeight: 700, minWidth: 52, fontSize: 11 }}>{sig.level}</span>
                           <span>{sig.text}</span><span style={{ fontSize: 11, color: COLORS.dim }}>({sig.rule})</span>
-                          {overridden ? <span style={{ marginLeft: "auto", fontSize: 11, color: COLORS.yellow }}>✓ overridden</span> : <button onClick={() => logOverride(sel.ticker, sig.text)} style={{ marginLeft: "auto", background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 6, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>Override</button>}
+                          {overridden ? <span style={{ marginLeft: "auto", fontSize: 11, color: COLORS.yellow }}>✓ overridden</span> : <button onClick={() => logOverride(sel.ticker, sig.text)} style={{ marginLeft: "auto", background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 9, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>Override</button>}
                         </div>
                       );
                     })}
@@ -1147,17 +1275,52 @@ export default function App() {
                 )}
               </div>
 
+              {/* CLAUDE'S READ — verdict, bear case, veto detail from the last scan */}
+              {sel.claudeScan && (() => {
+                const cs = sel.claudeScan;
+                const vc = cs.verdict?.call || "";
+                const vCol = vc === "ADD" ? COLORS.green : vc === "EXIT" ? COLORS.red : vc === "TRIM" ? COLORS.yellow : vc === "RIDE_HYPE" ? COLORS.gold : COLORS.blue;
+                const drift = cs.composite != null && Math.abs(cs.composite - sel.calc.composite) > 0.3;
+                return (
+                  <div style={{ background: COLORS.panel, border: `1px solid ${vc ? vCol : COLORS.border}`, borderRadius: 18, padding: 18, marginBottom: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 800, fontSize: 14 }}>🧭 Claude's read</div>
+                      <span style={{ fontSize: 11, color: COLORS.dim }}>scanned {cs.date}{cs.band ? ` · ${cs.band}` : ""}</span>
+                      <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 800, color: vCol, padding: "4px 14px", borderRadius: 999, border: `1px solid ${vCol}`, background: `${vCol}18`, boxShadow: glow(vCol) }}>{vc ? vc.split("_").join(" ") : "no verdict"}</span>
+                    </div>
+                    {cs.verdict?.horizon && <div style={{ fontSize: 12, color: COLORS.gold, marginTop: 8 }}>⏳ {cs.verdict.horizon}</div>}
+                    {cs.verdict?.rationale && <div style={{ fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>{cs.verdict.rationale}</div>}
+                    {cs.summary && cs.kind !== "full_scan" && <div style={{ fontSize: 12, color: COLORS.text, marginTop: 8, lineHeight: 1.5, padding: "8px 10px", background: COLORS.bg, borderRadius: 10, border: `1px solid ${COLORS.border}` }}>📌 {cs.summary}</div>}
+                    {cs.watchCheck?.length > 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 4 }}>WATCH ITEMS CHECKED</div>
+                        {cs.watchCheck.map((w, wi) => (
+                          <div key={wi} style={{ fontSize: 12, padding: "3px 0", lineHeight: 1.45, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <span style={{ fontWeight: 700, minWidth: 58, color: w.status === "fired" ? COLORS.gold : w.status === "dead" ? COLORS.red : COLORS.dim, textTransform: "uppercase", fontSize: 10, paddingTop: 2 }}>{w.status}</span>
+                            <span style={{ flex: 1 }}>{w.item}{w.note ? <span style={{ color: COLORS.dim }}> — {w.note}</span> : null}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {cs.bearCase && <div style={{ fontSize: 12, color: COLORS.red, marginTop: 8, lineHeight: 1.5 }}>🐻 {cs.bearCase}</div>}
+                    {cs.vetoes?.tripped?.length > 0 && <div style={{ fontSize: 12, color: COLORS.red, marginTop: 8 }}>⛔ Veto tripped: {cs.vetoes.tripped.join(" · ")}</div>}
+                    {cs.vetoes?.detail && <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 6 }}>{cs.vetoes.detail}</div>}
+                    {drift && <div style={{ fontSize: 11, color: COLORS.yellow, marginTop: 8 }}>⚠️ Board composite {sel.calc.composite.toFixed(1)} differs from the scan's {cs.composite.toFixed(1)} — that's your overrides, qual edits, or weight changes since the scan, not an error.</div>}
+                  </div>
+                );
+              })()}
+
               {QUESTIONS.map(q => {
                 const ks = Object.keys(CLUSTER_NAMES).filter(k => QUESTION_OF[k] === q);
                 return (
-                  <div key={q} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "14px 18px", marginBottom: 10 }}>
+                  <div key={q} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: "14px 18px", marginBottom: 10 }}>
                     <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{q}</div>
                     {ks.map(k => {
                       const v = sel.calc.scores[k], prev = sel.prevScores?.[k];
                       const d = typeof v === "number" && typeof prev === "number" ? v - prev : null;
                       const hasOv = sel.calc.overrideScores[k] && sel.calc.overrideScores[k].value != null;
                       return (
-                        <div key={k} onClick={() => setSelCluster(k)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 6px", borderRadius: 8, fontSize: 13, cursor: "pointer" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                        <div key={k} onClick={() => setSelCluster(k)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 6px", borderRadius: 10, fontSize: 13, cursor: "pointer" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
                           <span style={{ minWidth: 170, color: COLORS.dim }}>{k} — {CLUSTER_NAMES[k]} {hasOv && <span title="overridden" style={{ color: COLORS.yellow }}>✏️</span>}</span>
                           <div style={{ flex: 1, height: 8, background: COLORS.bg, borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${(typeof v === "number" ? v : 0) * 10}%`, height: "100%", background: scoreColor(v), borderRadius: 4 }} /></div>
                           <span style={{ fontWeight: 700, minWidth: 38, textAlign: "right", color: scoreColor(v) }}>{typeof v === "number" ? v.toFixed(1) : v == null ? "—" : "KO"}</span>
@@ -1172,7 +1335,7 @@ export default function App() {
               })}
 
               {/* VERDICT */}
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 18, marginTop: 4 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 4 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 800, fontSize: 14 }}>Verdict</div>
                   {sel.reviewedWeek ? <span style={{ fontSize: 11, color: COLORS.green }}>✓ Reviewed {sel.reviewedWeek}</span> : <span style={{ fontSize: 11, color: COLORS.yellow }}>not yet reviewed this week</span>}
@@ -1183,7 +1346,7 @@ export default function App() {
                     const disabled = (a === "Trim" || a === "Exit" || a === "Hold") && !(sel.held && sel.entryPrice != null);
                     return (
                       <button key={a} disabled={disabled} onClick={() => doVerdict(sel.ticker, a)} title={disabled ? "No open position — use Add first" : ""}
-                        style={{ flex: 1, minWidth: 80, background: disabled ? COLORS.bg : a === "Exit" ? COLORS.red : a === "Add" ? COLORS.green : COLORS.panelLight, color: disabled ? COLORS.dim : a === "Hold" || a === "Trim" ? COLORS.text : "#fff", border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 0", cursor: disabled ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 14, opacity: disabled ? 0.5 : 1 }}>{a}</button>
+                        style={{ flex: 1, minWidth: 80, background: disabled ? COLORS.bg : a === "Exit" ? COLORS.red : a === "Add" ? COLORS.green : COLORS.panelLight, color: disabled ? COLORS.dim : a === "Hold" || a === "Trim" ? COLORS.text : "#fff", border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 0", cursor: disabled ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 14, opacity: disabled ? 0.5 : 1 }}>{a}</button>
                     );
                   })}
                 </div>
@@ -1191,11 +1354,11 @@ export default function App() {
               </div>
 
               {/* NOTEBOOK */}
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 18, marginTop: 14 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 14 }}>
                 <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>📓 Position notebook</div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                   <input id="newNote" placeholder="Add a note…" style={{ ...inp, marginTop: 0 }} onKeyDown={e => { if (e.key === "Enter") { addNote(sel.ticker, e.target.value); e.target.value = ""; } }} />
-                  <button onClick={() => { const el = document.getElementById("newNote"); addNote(sel.ticker, el.value); el.value = ""; }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "0 16px", cursor: "pointer", fontWeight: 700 }}>Add</button>
+                  <button onClick={() => { const el = document.getElementById("newNote"); addNote(sel.ticker, el.value); el.value = ""; }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", fontWeight: 700 }}>Add</button>
                 </div>
                 {(sel.notebook || []).length === 0 ? <div style={{ fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>No notes yet.</div> : (sel.notebook || []).map((n, i) => (
                   <div key={i} style={{ fontSize: 12, padding: "6px 0", borderBottom: i < sel.notebook.length - 1 ? `1px solid ${COLORS.border}` : "none" }}><span style={{ color: COLORS.dim }}>{n.date}</span> — {n.text}</div>
@@ -1203,15 +1366,15 @@ export default function App() {
               </div>
 
               {/* HISTORY TIMELINE */}
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 18, marginTop: 14 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 14 }}>
                 <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ fontWeight: 800, fontSize: 14 }}>🕓 Weekly history</div>
                   <span style={{ fontSize: 11, color: COLORS.dim, marginLeft: 10 }}>frozen each snapshot — tap a week to see its full state</span>
                 </div>
-                {(data.snapshots?.[sel.ticker] || []).length === 0 ? <div style={{ fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>No snapshots yet. The first one is frozen on your next Snapshot week.</div> : (
+                {(data.snapshots?.[sel.ticker] || []).length === 0 ? <div style={{ fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>No snapshots yet. One gets frozen automatically every time you paste an update scan.</div> : (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {(data.snapshots[sel.ticker] || []).slice().reverse().map((snap, i) => (
-                      <button key={i} onClick={() => setHistDate(snap.date)} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 12px", cursor: "pointer", textAlign: "left", color: COLORS.text }}>
+                      <button key={i} onClick={() => setHistDate(snap.date)} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "8px 12px", cursor: "pointer", textAlign: "left", color: COLORS.text }}>
                         <div style={{ fontSize: 11, color: COLORS.dim }}>{snap.date}</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: decColor(snap.decision) }}>{snap.composite?.toFixed?.(1) ?? snap.composite}</div>
                         <div style={{ fontSize: 10, color: COLORS.dim }}>${snap.price} · {snap.decision}</div>
@@ -1223,9 +1386,9 @@ export default function App() {
 
               {/* DANGER ZONE */}
               <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <button onClick={() => deleteStock(sel.ticker)} style={{ background: "transparent", color: COLORS.red, border: `1px solid ${COLORS.red}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}>🗑 Delete {sel.ticker} + all history</button>
+                <button onClick={() => deleteStock(sel.ticker)} style={{ background: "transparent", color: COLORS.red, border: `1px solid ${COLORS.red}`, borderRadius: 10, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}>🗑 Delete {sel.ticker} + all history</button>
                 {(data.snapshots?.[sel.ticker] || []).length > 2 && (
-                  <button onClick={() => { const d = prompt("Prune snapshots before date (YYYY-MM-DD):"); if (d) pruneSnapshots(sel.ticker, d); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}>Prune old snapshots</button>
+                  <button onClick={() => { const d = prompt("Prune snapshots before date (YYYY-MM-DD):"); if (d) pruneSnapshots(sel.ticker, d); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}>Prune old snapshots</button>
                 )}
                 <span style={{ fontSize: 11, color: COLORS.dim }}>delete a bust to free storage</span>
               </div>
@@ -1238,10 +1401,10 @@ export default function App() {
               return (
                 <>
                   <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-                    <button onClick={() => setHistDate(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← {sel.ticker} current</button>
+                    <button onClick={() => setHistDate(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← {sel.ticker} current</button>
                     <span style={{ fontSize: 13, fontWeight: 700 }}>{sel.ticker} — frozen state on {snap.date}</span>
                   </div>
-                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 14, padding: 20 }}>
+                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 18, padding: 20 }}>
                     <div style={{ display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
                       <ScoreRing score={snap.composite} size={72} decision={snap.decision} />
                       <div>
@@ -1251,12 +1414,23 @@ export default function App() {
                         {snap.knockouts?.length > 0 && <div style={{ fontSize: 12, color: COLORS.red }}>⛔ {snap.knockouts.join(", ")}</div>}
                       </div>
                     </div>
+                    {snap.summary && <div style={{ fontSize: 12, marginBottom: 12, padding: "8px 10px", background: COLORS.bg, borderRadius: 10, border: `1px solid ${COLORS.border}`, lineHeight: 1.5 }}>📌 {snap.summary}</div>}
+                    {snap.fields && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                        {[["Price", snap.fields.price, "$"], ["Mkt Cap", snap.fields.mktCap, "$", "M"], ["Debt", snap.fields.debt, "$", "M"], ["Cash", snap.fields.cash, "$", "M"], ["Burn/qtr", snap.fields.burnQ, "$", "M"], ["Volume", snap.fields.volume, "", ""], ["Insider net", snap.fields.insiderNet, "", " sh"]].map(([lbl, val, pre, suf], fi) => (
+                          <div key={fi} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "6px 10px" }}>
+                            <div style={{ fontSize: 9, color: COLORS.dim }}>{lbl}</div>
+                            <div style={{ fontSize: 13, fontWeight: 700 }}>{val != null ? `${pre}${typeof val === "number" ? val.toLocaleString() : val}${suf || ""}` : "—"}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
                       {Object.keys(CLUSTER_NAMES).map(k => {
                         const v = snap.scores?.[k], cur = sel.calc.scores[k];
                         const d = typeof v === "number" && typeof cur === "number" ? cur - v : null;
                         return (
-                          <div key={k} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 10 }}>
+                          <div key={k} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 10 }}>
                             <div style={{ fontSize: 10, color: COLORS.dim }}>{k} — {CLUSTER_NAMES[k]}</div>
                             <div style={{ fontSize: 16, fontWeight: 800, color: scoreColor(v) }}>{typeof v === "number" ? v.toFixed(1) : "—"}</div>
                             {d != null && <div style={{ fontSize: 10 }}>now: {cur.toFixed(1)} <Delta v={d} /></div>}
@@ -1272,38 +1446,72 @@ export default function App() {
           ) : (
             /* ── EVIDENCE VIEW ── */
             (() => {
-              const k = selCluster, t = sel.calc.trace[k], v = sel.calc.scores[k];
+              const k = selCluster, t = sel.calc.trace[k] || {}, v = sel.calc.scores[k];
               return (
                 <>
                   <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-                    <button onClick={() => setSelCluster(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← {sel.ticker} analysis</button>
+                    <button onClick={() => setSelCluster(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← {sel.ticker} analysis</button>
                     <span style={{ fontSize: 13, fontWeight: 700 }}>{sel.ticker} · {k} — {CLUSTER_NAMES[k]} · Evidence Room</span>
                   </div>
-                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.gold}`, borderRadius: 14, padding: 20 }}>
+                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.gold}`, borderRadius: 18, padding: 20 }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4, flexWrap: "wrap" }}>
                       <div style={{ fontSize: 28, fontWeight: 800, color: scoreColor(v) }}>{typeof v === "number" ? v.toFixed(1) : v == null ? "unscored" : "KNOCKOUT"}</div>
                       <div style={{ fontSize: 12, color: COLORS.dim }}>weight ×{(rules.weights[k] * 100).toFixed(0)}% → contributes <b style={{ color: COLORS.text }}>{typeof v === "number" ? (v * rules.weights[k]).toFixed(2) : "0"}</b> to composite {sel.calc.composite.toFixed(1)}</div>
                       <div style={{ marginLeft: "auto", fontSize: 11, color: COLORS.dim }}>Source: {CLUSTER_SOURCES[k]}</div>
                     </div>
                     {sel.calc.overrideScores[k] && sel.calc.overrideScores[k].value != null && (
-                      <div style={{ fontSize: 12, color: COLORS.yellow, marginBottom: 8, padding: "6px 10px", background: "rgba(224,181,84,0.1)", borderRadius: 8 }}>
+                      <div style={{ fontSize: 12, color: COLORS.yellow, marginBottom: 8, padding: "6px 10px", background: "rgba(224,181,84,0.1)", borderRadius: 10 }}>
                         ✏️ Your override: system computed <b>{typeof sel.calc.computedScores[k] === "number" ? sel.calc.computedScores[k].toFixed(1) : sel.calc.computedScores[k]}</b>, you set <b>{sel.calc.overrideScores[k].value}</b> — {sel.calc.overrideScores[k].reason}
                         <button onClick={() => setClusterOverride(sel.ticker, k, null)} style={{ marginLeft: 10, background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 5, padding: "1px 8px", cursor: "pointer", fontSize: 11 }}>clear</button>
                       </div>
                     )}
                     {sel.prevScores?.[k] != null && typeof v === "number" && <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12 }}>Last week: {sel.prevScores[k].toFixed(1)} → this week: {v.toFixed(1)} <Delta v={v - sel.prevScores[k]} /></div>}
 
+                    {/* CLAUDE'S DOSSIER — facts, reasoning, watch items from the last scan */}
+                    {sel.claudeScan?.clusters?.[k] && (() => {
+                      const cd = sel.claudeScan.clusters[k];
+                      if (!cd.facts.length && !cd.reasoning && !cd.watch.length) return null;
+                      return (
+                        <div style={{ marginBottom: 14, background: COLORS.bg, border: `1px solid ${COLORS.blue}`, borderRadius: 14, padding: 14 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                            <span style={{ fontWeight: 800, fontSize: 12, color: COLORS.blue }}>🧭 CLAUDE'S DOSSIER</span>
+                            <span style={{ fontSize: 11, color: COLORS.dim }}>scanned {sel.claudeScan.date}</span>
+                            {cd.score != null && <span style={{ marginLeft: "auto", fontSize: 12, color: COLORS.dim }}>Claude scored <b style={{ color: scoreColor(cd.score) }}>{cd.score.toFixed(1)}</b></span>}
+                          </div>
+                          {cd.changed && <div style={{ fontSize: 12, color: COLORS.yellow, marginBottom: 8, padding: "6px 10px", background: "rgba(224,181,84,0.08)", borderRadius: 10 }}>Δ Moved in the last update{cd.changeNote ? `: ${cd.changeNote}` : ""}</div>}
+                          {cd.facts.length > 0 && (
+                            <div style={{ marginBottom: cd.reasoning || cd.watch.length ? 10 : 0 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 4 }}>FACTS</div>
+                              {cd.facts.map((f, fi) => <div key={fi} style={{ fontSize: 12, padding: "3px 0", lineHeight: 1.45 }}>• {f}</div>)}
+                            </div>
+                          )}
+                          {cd.reasoning && (
+                            <div style={{ marginBottom: cd.watch.length ? 10 : 0 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 4 }}>REASONING</div>
+                              <div style={{ fontSize: 12, lineHeight: 1.5 }}>{cd.reasoning}</div>
+                            </div>
+                          )}
+                          {cd.watch.length > 0 && (
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 4 }}>WATCH ITEMS</div>
+                              {cd.watch.map((w, wi) => <div key={wi} style={{ fontSize: 12, color: COLORS.gold, padding: "3px 0", lineHeight: 1.45 }}>👁 {w}</div>)}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     {["G", "H", "I"].includes(k) ? (
                       <div style={{ display: "grid", gap: 10 }}>
                         {t.components.map((c, i) => {
                           const isEd = editComp && editComp.cluster === k && editComp.idx === i;
                           return (
-                            <div key={i} style={{ background: COLORS.bg, border: `1px solid ${isEd ? COLORS.gold : COLORS.border}`, borderRadius: 10, padding: 12 }}>
+                            <div key={i} style={{ background: COLORS.bg, border: `1px solid ${isEd ? COLORS.gold : COLORS.border}`, borderRadius: 14, padding: 12 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                                 <span style={{ fontWeight: 700, fontSize: 13, minWidth: 120 }}>{c.name}</span>
                                 <span style={{ fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: c.input === "High" ? "rgba(61,204,126,0.15)" : c.input === "Medium" ? "rgba(224,181,84,0.15)" : c.input === "Low" ? "rgba(232,92,92,0.15)" : COLORS.panel, color: c.input === "High" ? COLORS.green : c.input === "Medium" ? COLORS.yellow : c.input === "Low" ? COLORS.red : COLORS.dim }}>{c.input}</span>
                                 <span style={{ fontSize: 11, color: COLORS.dim }}>{c.score !== "—" ? `→ ${c.score}` : "unscored"}</span>
-                                <button onClick={() => setEditComp(isEd ? null : { cluster: k, idx: i })} style={{ marginLeft: "auto", background: "transparent", color: COLORS.gold, border: `1px solid ${COLORS.gold}`, borderRadius: 6, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>{isEd ? "close" : "edit"}</button>
+                                <button onClick={() => setEditComp(isEd ? null : { cluster: k, idx: i })} style={{ marginLeft: "auto", background: "transparent", color: COLORS.gold, border: `1px solid ${COLORS.gold}`, borderRadius: 9, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>{isEd ? "close" : "edit"}</button>
                               </div>
                               {c.rationale ? <div style={{ fontSize: 12, color: COLORS.text, marginTop: 8, lineHeight: 1.5 }}>{c.rationale}</div> : <div style={{ fontSize: 12, color: COLORS.dim, marginTop: 8, fontStyle: "italic" }}>No reasoning yet — use "Discuss with Claude" to draft one, or edit directly.</div>}
                               {c.sources?.length > 0 && <div style={{ fontSize: 11, color: COLORS.blue, marginTop: 6 }}>📎 {c.sources.join(" · ")}</div>}
@@ -1311,12 +1519,12 @@ export default function App() {
                                 <div style={{ marginTop: 10, borderTop: `1px solid ${COLORS.border}`, paddingTop: 10, display: "grid", gap: 8 }}>
                                   <div style={{ display: "flex", gap: 6 }}>
                                     {[1, 2, 3].map(sv => (
-                                      <button key={sv} onClick={() => setQualComponent(sel.ticker, k, i, sv, undefined, undefined)} style={{ flex: 1, background: c.input === ["", "Low", "Medium", "High"][sv] ? COLORS.gold : COLORS.panel, color: c.input === ["", "Low", "Medium", "High"][sv] ? "#1B2A4A" : COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "6px 0", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>{["", "Low", "Medium", "High"][sv]}</button>
+                                      <button key={sv} onClick={() => setQualComponent(sel.ticker, k, i, sv, undefined, undefined)} style={{ flex: 1, background: c.input === ["", "Low", "Medium", "High"][sv] ? COLORS.gold : COLORS.panel, color: c.input === ["", "Low", "Medium", "High"][sv] ? "#1B2A4A" : COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "6px 0", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>{["", "Low", "Medium", "High"][sv]}</button>
                                     ))}
                                   </div>
                                   <textarea defaultValue={c.rationale} placeholder="Your reasoning…" id={`rat-${k}-${i}`} style={{ ...inp, height: 60, fontSize: 12 }} />
                                   <input defaultValue={(c.sources || []).join(", ")} placeholder="Sources (comma-separated)" id={`src-${k}-${i}`} style={{ ...inp, color: COLORS.blue, fontSize: 12 }} />
-                                  <button onClick={() => setQualComponent(sel.ticker, k, i, null, document.getElementById(`rat-${k}-${i}`).value, document.getElementById(`src-${k}-${i}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 6, padding: "7px 0", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save reasoning & sources</button>
+                                  <button onClick={() => setQualComponent(sel.ticker, k, i, null, document.getElementById(`rat-${k}-${i}`).value, document.getElementById(`src-${k}-${i}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 9, padding: "7px 0", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save reasoning & sources</button>
                                 </div>
                               )}
                             </div>
@@ -1324,30 +1532,15 @@ export default function App() {
                         })}
                       </div>
                     ) : (
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                        <thead><tr style={{ color: COLORS.dim, textAlign: "left", fontSize: 10 }}>
-                          <th style={{ padding: "4px 8px" }}>COMPONENT</th><th style={{ padding: "4px 8px" }}>RAW INPUT</th><th style={{ padding: "4px 8px" }}>TIER</th><th style={{ padding: "4px 8px" }}>RULE APPLIED</th><th style={{ padding: "4px 8px", textAlign: "right" }}>SCORE</th><th style={{ padding: "4px 8px", textAlign: "right" }}>SUB-WT</th>
-                        </tr></thead>
-                        <tbody>
-                          {t.components.map((c, i) => (
-                            <tr key={i} style={{ borderTop: `1px solid ${COLORS.border}` }}>
-                              <td style={{ padding: "8px", fontWeight: 600 }}>{c.name}</td><td style={{ padding: "8px", color: COLORS.blue }}>{c.input}</td>
-                              <td style={{ padding: "8px", color: COLORS.dim }}>{c.tier}</td><td style={{ padding: "8px", color: COLORS.dim, fontSize: 11 }}>{c.rule}</td>
-                              <td style={{ padding: "8px", textAlign: "right", fontWeight: 700, color: c.score === "KO" ? COLORS.red : COLORS.text }}>{c.score}</td>
-                              <td style={{ padding: "8px", textAlign: "right", color: COLORS.dim }}>{c.weight ? `${(c.weight * 100).toFixed(0)}%` : "bonus"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                      !sel.claudeScan?.clusters?.[k] && (
+                        <div style={{ fontSize: 12, color: COLORS.dim, fontStyle: "italic", padding: "10px 0" }}>
+                          No dossier for this cluster yet. Scores come from the skill — run a FULL SCAN on {sel.ticker} and paste the block, or set your own override below.
+                        </div>
+                      )
                     )}
 
                     {t.note && <div style={{ marginTop: 10, fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>📝 Summary note: {t.note}</div>}
                     {t.lastEarnings && <div style={{ marginTop: 4, fontSize: 11, color: COLORS.dim }}>Last earnings call analyzed: {t.lastEarnings}</div>}
-                    {k === "J" && t.springConds && (
-                      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        {t.springConds.map((c, i) => <span key={i} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: c.met ? "rgba(61,204,126,0.15)" : COLORS.bg, color: c.met ? COLORS.green : COLORS.dim, border: `1px solid ${c.met ? COLORS.green : COLORS.border}` }}>{c.met ? "✓" : "✗"} {c.name}</span>)}
-                      </div>
-                    )}
                     {/* Cluster J: editable catalyst + lifecycle inputs (moved here from stock-inputs) */}
                     {k === "J" && (
                       <div style={{ marginTop: 12, borderTop: `1px solid ${COLORS.border}`, paddingTop: 12 }}>
@@ -1361,7 +1554,7 @@ export default function App() {
                       </div>
                     )}
                     {k === "C" && sel.calc.knockouts.length > 0 && (
-                      <div style={{ marginTop: 12, padding: 12, background: "rgba(232,92,92,0.1)", border: `1px solid ${COLORS.red}`, borderRadius: 10 }}>
+                      <div style={{ marginTop: 12, padding: 12, background: "rgba(232,92,92,0.1)", border: `1px solid ${COLORS.red}`, borderRadius: 14 }}>
                         <div style={{ fontWeight: 800, color: COLORS.red, fontSize: 12, marginBottom: 4 }}>⛔ ACTIVE KNOCKOUTS</div>
                         {sel.calc.knockouts.map((ko, i) => <div key={i} style={{ fontSize: 12 }}><b>{ko.name}</b> — {ko.rule}</div>)}
                       </div>
@@ -1373,14 +1566,14 @@ export default function App() {
                           <span style={{ fontSize: 12, color: COLORS.dim }}>Override this cluster score:</span>
                           <input type="number" min="0" max="10" step="0.1" id={`ov-${k}`} defaultValue={typeof v === "number" ? v.toFixed(1) : ""} style={{ ...inp, width: 70, marginTop: 0 }} />
                           <input id={`ovr-${k}`} placeholder="reason for override" style={{ ...inp, flex: 1, minWidth: 160, marginTop: 0 }} />
-                          <button onClick={() => setClusterOverride(sel.ticker, k, document.getElementById(`ov-${k}`).value, document.getElementById(`ovr-${k}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save</button>
-                          <button onClick={() => setClusterOvEdit(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                          <button onClick={() => setClusterOverride(sel.ticker, k, document.getElementById(`ov-${k}`).value, document.getElementById(`ovr-${k}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 9, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save</button>
+                          <button onClick={() => setClusterOvEdit(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
                         </div>
-                      ) : <button onClick={() => setClusterOvEdit(k)} style={{ background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 6, padding: "5px 14px", cursor: "pointer", fontSize: 12 }}>✏️ Override {k} cluster score</button>}
+                      ) : <button onClick={() => setClusterOvEdit(k)} style={{ background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 9, padding: "5px 14px", cursor: "pointer", fontSize: 12 }}>✏️ Override {k} cluster score</button>}
                     </div>
                   </div>
 
-                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 18, marginTop: 14 }}>
+                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 14 }}>
                     <div style={{ fontWeight: 800, marginBottom: 10, fontSize: 13 }}>📜 {sel.ticker} — Decision & Override Trail</div>
                     {(sel.decisions || []).length === 0 && (sel.overrides || []).length === 0 && <div style={{ fontSize: 12, color: COLORS.dim }}>No decisions logged yet.</div>}
                     {(sel.overrides || []).map((o, i) => <div key={`o${i}`} style={{ fontSize: 12, padding: "6px 0", borderBottom: `1px solid ${COLORS.border}` }}><span style={{ color: COLORS.yellow, fontWeight: 700 }}>OVERRIDE</span> <span style={{ color: COLORS.dim }}>{o.date}</span> — "{o.signal}" — <i>{o.reason}</i></div>)}
@@ -1393,72 +1586,59 @@ export default function App() {
         </div>
       )}
 
-      {/* ══ JOURNAL ══ */}
-      {room === "journal" && (
-        <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
-            {[["ALL REVIEWED PICKS", avgReturn == null ? "—" : `${avgReturn >= 0 ? "+" : ""}${avgReturn.toFixed(1)}%`, avgReturn == null ? COLORS.dim : avgReturn >= 0 ? COLORS.green : COLORS.red, `${reviewed.length} with review prices`],
-              ["GO PICKS AVG", goAvg == null ? "—" : `${goAvg >= 0 ? "+" : ""}${goAvg.toFixed(1)}%`, goAvg == null ? COLORS.dim : goAvg >= 0 ? COLORS.green : COLORS.red, "does GO actually win?"],
-              ["THESIS HIT RATE", thesisTotal ? `${thesisYes}/${thesisTotal}` : "—", COLORS.gold, "theses that held"],
-              ["OVERRIDES ACTIVE", String(computed.reduce((a, s) => a + (s.overrides || []).length, 0)), COLORS.yellow, "your judgment, tracked"]].map(([t, val, col, sub], i) => (
-              <div key={i} style={{ flex: "1 1 140px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "12px 14px" }}>
-                <div style={{ fontSize: 11, color: COLORS.dim }}>{t}</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: col }}>{val}</div>
-                <div style={{ fontSize: 10, color: COLORS.dim }}>{sub}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1 }}>WEEKLY LOG — tap a row to fill in the review</div>
-            <button onClick={snapshotToJournal} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>📸 Snapshot current board</button>
-          </div>
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "auto" }}>
-            <div style={{ minWidth: 860 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "90px 70px 80px 60px 90px 90px 80px 90px 90px 1fr", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
-                <span>WEEK</span><span>TICKER</span><span>DECISION</span><span>SCORE</span><span>PRICE@SCREEN</span><span>PRICE@REVIEW</span><span>% CHG</span><span>CATALYST?</span><span>THESIS?</span><span>NOTES</span>
-              </div>
-              {journal.length === 0 && <div style={{ padding: 18, textAlign: "center", color: COLORS.dim, fontSize: 13 }}>No entries yet. Hit "Snapshot current board".</div>}
-              {journal.map((j, i) => {
-                const pct = j.priceScreen != null && j.priceReview != null ? (j.priceReview - j.priceScreen) / j.priceScreen * 100 : null;
-                const editing = journalEdit === i;
-                return (
-                  <div key={i}>
-                    <div onClick={() => setJournalEdit(editing ? null : i)} style={{ display: "grid", gridTemplateColumns: "90px 70px 80px 60px 90px 90px 80px 90px 90px 1fr", gap: 8, padding: "9px 14px", fontSize: 12, alignItems: "center", borderBottom: `1px solid ${COLORS.border}`, cursor: "pointer", background: editing ? COLORS.panelLight : "transparent" }}>
-                      <span style={{ color: COLORS.dim }}>{j.week}</span><span style={{ fontWeight: 800 }}>{j.ticker}</span>
-                      <span style={{ fontWeight: 700, color: decColor(j.decision === "DISQUALIFIED" ? "NO-GO" : j.decision) }}>{j.decision}</span>
-                      <span>{j.score?.toFixed?.(1) ?? j.score}</span><span>{j.priceScreen != null ? `$${j.priceScreen}` : "—"}</span>
-                      <span>{j.priceReview != null ? `$${j.priceReview}` : <span style={{ color: COLORS.yellow }}>pending</span>}</span>
-                      <Delta v={pct} suffix="%" />
-                      <span style={{ color: j.catalystFired === "Yes" ? COLORS.green : COLORS.dim }}>{j.catalystFired || "—"}</span>
-                      <span style={{ color: j.thesisHeld === "Yes" ? COLORS.green : j.thesisHeld === "No" ? COLORS.red : j.thesisHeld === "Partial" ? COLORS.yellow : COLORS.dim }}>{j.thesisHeld || "—"}</span>
-                      <span style={{ color: COLORS.dim, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.notes || j.right || j.wrong || ""}</span>
-                    </div>
-                    {editing && (
-                      <div style={{ padding: "12px 14px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.bg, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
-                        <label style={{ fontSize: 11, color: COLORS.dim }}>Price at review<br /><input type="number" step="0.01" defaultValue={j.priceReview ?? ""} onBlur={e => updateJournal(i, "priceReview", e.target.value)} style={inp} /></label>
-                        <label style={{ fontSize: 11, color: COLORS.dim }}>Catalyst fired?<br /><select defaultValue={j.catalystFired || ""} onChange={e => updateJournal(i, "catalystFired", e.target.value)} style={inp}><option value="">—</option><option>Yes</option><option>No</option><option>Delayed</option></select></label>
-                        <label style={{ fontSize: 11, color: COLORS.dim }}>Thesis held?<br /><select defaultValue={j.thesisHeld || ""} onChange={e => updateJournal(i, "thesisHeld", e.target.value)} style={inp}><option value="">—</option><option>Yes</option><option>Partial</option><option>No</option></select></label>
-                        <label style={{ fontSize: 11, color: COLORS.dim, gridColumn: "1 / -1" }}>What went right<br /><input defaultValue={j.right || ""} onBlur={e => updateJournal(i, "right", e.target.value)} style={{ ...inp, color: COLORS.green }} /></label>
-                        <label style={{ fontSize: 11, color: COLORS.dim, gridColumn: "1 / -1" }}>What went wrong<br /><input defaultValue={j.wrong || ""} onBlur={e => updateJournal(i, "wrong", e.target.value)} style={{ ...inp, color: COLORS.red }} /></label>
-                        <label style={{ fontSize: 11, color: COLORS.dim, gridColumn: "1 / -1" }}>Notes / next action<br /><input defaultValue={j.notes || ""} onBlur={e => updateJournal(i, "notes", e.target.value)} style={inp} /></label>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ══ CONFIG ══ */}
+      {room === "config" && (
+        <div className="room" style={{ padding: "26px 28px 48px", maxWidth: 720, margin: "0 auto" }}>
+          <PageHeader title="Config" sub="Rules, calibration, and data safety" />
 
-      {/* ══ LAB ══ */}
-      {room === "lab" && (
-        <div style={{ padding: 60, textAlign: "center", color: COLORS.dim }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>🧪</div>
-          <div style={{ fontWeight: 700, fontSize: 18, color: COLORS.text, marginBottom: 6 }}>The Lab</div>
-          <div style={{ fontSize: 13, maxWidth: 420, margin: "0 auto" }}>New-candidate screening with guided qualitative scoring — next build session.</div>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginBottom: 14 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>💾 Backup & restore</div>
+            <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12, lineHeight: 1.55 }}>Everything lives in this browser's local storage, and Safari purges local storage without asking. Export a backup after every scan session and keep it in Files or iCloud. Import replaces everything, so it asks first.</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button onClick={exportAll} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>⬇ Export backup</button>
+              <button onClick={() => document.getElementById("importFileInput")?.click()} style={{ background: "transparent", color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>⬆ Import backup</button>
+              <input id="importFileInput" type="file" accept=".json,application/json" style={{ display: "none" }} onChange={e => { importAll(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 10 }}>{data.stocks.length} stocks · {Object.values(data.snapshots || {}).reduce((a, v) => a + v.length, 0)} snapshots on board right now</div>
+          </div>
+
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 800, fontSize: 14 }}>⚖️ Rules — weights, bands, vetoes</div>
+              <button onClick={resetRules} style={{ marginLeft: "auto", background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "3px 12px", cursor: "pointer", fontSize: 11 }}>↩ Reset to defaults</button>
+            </div>
+            <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12, lineHeight: 1.55 }}>Edits apply to the board instantly and ride into every brief as CONFIG, which beats the skill's own defaults — no skill re-upload needed. The deep rubric (tier tables, PICPOT anchors) lives in the skill itself; changing that is a deliberate SKILL.md edit, not a dial here.</div>
+
+            {(() => { const wSum = Object.values(rules.weights).reduce((a, w) => a + w, 0) * 100; return (
+              <div style={{ fontSize: 11, color: Math.abs(wSum - 100) > 0.5 ? COLORS.yellow : COLORS.dim, marginBottom: 8 }}>CLUSTER WEIGHTS — sum {wSum.toFixed(0)}%{Math.abs(wSum - 100) > 0.5 ? " (≠100% — composite still normalizes, but check your intent)" : ""}</div>
+            ); })()}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+              {Object.entries(rules.weights).map(([k, w]) => (
+                <div key={k} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "6px 10px", width: 118 }}>
+                  <div style={{ fontSize: 9, color: COLORS.dim }}>{k} — {CLUSTER_NAMES[k]}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <input type="number" min="0" max="100" step="1" defaultValue={(w * 100).toFixed(0)} key={`w-${k}-${(w * 100).toFixed(0)}`} onBlur={e => { if (e.target.value !== (w * 100).toFixed(0)) setWeight(k, e.target.value); }} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }} style={{ ...inp, marginTop: 0, padding: "3px 6px", fontSize: 13, fontWeight: 700, width: 58 }} />
+                    <span style={{ fontSize: 12, color: COLORS.dim }}>%</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ fontSize: 11, color: COLORS.dim, marginBottom: 8 }}>DECISION BANDS & VETO THRESHOLDS</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {[["goThreshold", "GO ≥ (composite)", 0.1], ["watchThreshold", "WATCH ≥ (composite)", 0.1], ["mktCapFloor", "Mkt cap floor ($M)", 10], ["volHardVeto", "Min daily volume (sh)", 10000], ["runwayVeto", "Runway veto (< years)", 0.1], ["runwayMin", "Runway warning (< years)", 0.5], ["minAnalysts", "Min analysts", 1], ["catalystWindow", "Catalyst window (days)", 1]].map(([key, label, step]) => (
+                <div key={key} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "6px 10px", width: 150 }}>
+                  <div style={{ fontSize: 9, color: COLORS.dim }}>{label}</div>
+                  <input type="number" step={step} defaultValue={rules[key]} key={`r-${key}-${rules[key]}`} onBlur={e => { if (e.target.value !== String(rules[key])) setRule(key, e.target.value); }} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }} style={{ ...inp, marginTop: 2, padding: "3px 6px", fontSize: 13, fontWeight: 700 }} />
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 10 }}>Bands live: GO ≥ {rules.goThreshold} · WATCH ≥ {rules.watchThreshold} · below = NO-GO · any veto = DISQUALIFIED. Veto checks themselves run in the skill — these thresholds ship in the brief so the skill applies your numbers, not its defaults.</div>
+          </div>
         </div>
       )}
+      </div>
+      </div>
     </div>
   );
 }
