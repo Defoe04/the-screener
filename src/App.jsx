@@ -200,6 +200,10 @@ const COLORS = {
   text: "#EDEDEF", dim: "#8F8F98", gold: "#F5A623", green: "#31C48D", red: "#F4434D", yellow: "#F5A623", blue: "#52A8FF",
 };
 const glow = () => "none";
+// Humanized numbers: fmtM takes MILLIONS ("49000" → "$49.0B"), fmtSh raw share counts, fmtD raw dollars.
+const fmtM = m => m == null ? "—" : Math.abs(m) >= 1000 ? `$${(m / 1000).toFixed(1)}B` : `$${Math.abs(m) < 10 ? m.toFixed(1) : Math.round(m)}M`;
+const fmtSh = n => n == null ? "—" : Math.abs(n) >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : Math.abs(n) >= 1e3 ? `${Math.round(n / 1e3)}K` : `${n}`;
+const fmtD = d => d == null ? "—" : `${d < 0 ? "-" : ""}$${Math.round(Math.abs(d)).toLocaleString()}`;
 const GLOBAL_CSS = `
   button { transition: background .14s ease, color .14s ease, border-color .14s ease, opacity .14s ease; }
   button:active { opacity: .8; }
@@ -317,6 +321,8 @@ export default function App() {
   const [clusterOvEdit, setClusterOvEdit] = useState(null);
   const [histDate, setHistDate] = useState(null);
   const [sectorEdit, setSectorEdit] = useState(false);
+  const [deskQuery, setDeskQuery] = useState("");
+  const [deskFilter, setDeskFilter] = useState("all");
   const [copyMsg, setCopyMsg] = useState("");
 
   // ─── CLOUD SYNC ───────────────────────────────────────────────────────────
@@ -994,14 +1000,38 @@ export default function App() {
       {/* SYNC MODAL */}
       {syncModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(8,10,18,0.78)", backdropFilter: "blur(3px)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 14 }}>
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 20, padding: 26, width: "min(720px, 94vw)" }}>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 20, padding: 26, width: "min(720px, 94vw)" }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>📥 Paste from Claude</div>
             <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>Paste any JSON block Claude returns — a <code style={{ color: COLORS.blue }}>full_scan</code> (adds or overwrites a stock with the deep dossier), an <code style={{ color: COLORS.blue }}>update_scan</code> (refreshes a tracked stock, draws the diff, freezes a snapshot — also what a finalized DISCUSS emits), a <code style={{ color: COLORS.blue }}>weekly_update</code>, a <code style={{ color: COLORS.blue }}>stock_update</code>, or an old qual-only block. Manual values survive: only fields present in the block are overwritten.</div>
-            <textarea value={syncText} onChange={e => { setSyncText(e.target.value); setSyncError(""); }} placeholder='{"ticker":"ATYR","G":[...],"H":[...],"I":[...]}' style={{ ...inp, height: 200, fontSize: 11, fontFamily: "monospace" }} />
+            <textarea value={syncText} onChange={e => { setSyncText(e.target.value); setSyncError(""); }} placeholder='Paste the JSON block here…' style={{ ...inp, height: 200, fontSize: 11, fontFamily: "monospace" }} />
+            {(() => {
+              // Live preview: what will this paste do, before it does it.
+              const t = syncText; const a = t.indexOf("{"), b = t.lastIndexOf("}");
+              if (a < 0 || b <= a) return null;
+              let o = null; try { o = JSON.parse(t.slice(a, b + 1)); } catch { return <div style={{ marginTop: 10, fontSize: 12.5, color: COLORS.yellow }}>Not valid JSON yet — check the paste is complete.</div>; }
+              if (!o || typeof o !== "object") return null;
+              const dot = c => <span style={{ width: 7, height: 7, borderRadius: "50%", background: c, display: "inline-block", marginRight: 8 }} />;
+              let line = null;
+              if (o.type === "full_scan") {
+                const exists = data.stocks.some(s => s.ticker === o.ticker);
+                line = <>{dot(COLORS.green)}Full scan of <b>{o.ticker || "?"}</b> — verdict {o.verdict?.call ? o.verdict.call.split("_").join(" ") : "—"}, band {o.band || "—"}{o.missing?.length ? `, ${o.missing.length} field${o.missing.length > 1 ? "s" : ""} unverified` : ""}. {exists ? "Overwrites the existing entry (asks first)." : "Adds it to the board."}</>;
+              } else if (o.type === "update_scan") {
+                const moved = Object.entries(o.clusters || {}).filter(([, c]) => c && c.changed).map(([k]) => k);
+                const known = data.stocks.some(s => s.ticker === o.ticker);
+                line = <>{dot(known ? COLORS.blue : COLORS.red)}Update of <b>{o.ticker || "?"}</b> — verdict {o.verdict?.call ? o.verdict.call.split("_").join(" ") : "—"}{moved.length ? `, moved: ${moved.join(", ")}` : ", no cluster changes"}. {known ? "Refreshes the stock and freezes a snapshot." : "Not on the board — run a full scan first."}</>;
+              } else if (o.type === "market_update") {
+                line = <>{dot(COLORS.blue)}Market update — {Object.keys(o.macro || {}).length}/6 macro tiles, {(o.sectors || []).length} sectors, {(o.headlines || []).length} headlines{o.read ? ", backdrop read" : ""}.</>;
+              } else if (o.type === "portfolio_update") {
+                line = <>{dot(COLORS.blue)}Portfolio import — {(o.positions || []).length} holdings{o.cash != null ? `, cash ${fmtD(o.cash)}` : ""}. Reconciles held stocks with broker truth.</>;
+              } else if (o.type === "weekly_update" || o.type === "stock_update" || o.ticker) {
+                line = <>{dot(COLORS.dim)}Legacy {o.type || "qual"} block for <b>{o.ticker || "the board"}</b>.</>;
+              }
+              return line && <div style={{ marginTop: 10, fontSize: 12.5, color: COLORS.text, display: "flex", alignItems: "center", flexWrap: "wrap", background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 12px" }}>{line}</div>;
+            })()}
             {syncError && <div style={{ color: COLORS.red, fontSize: 12, marginTop: 8 }}>⚠️ {syncError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
               <button onClick={() => { setSyncModal(false); setSyncText(""); setSyncError(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 16px", cursor: "pointer" }}>Cancel</button>
-              <button onClick={applySync} style={{ background: COLORS.blue, color: "#0E1420", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>Apply block</button>
+              <button onClick={applySync} style={{ background: COLORS.text, color: "#0A0A0B", border: "none", borderRadius: 8, padding: "8px 20px", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Apply</button>
             </div>
           </div>
         </div>
@@ -1015,28 +1045,28 @@ export default function App() {
             <Btn icon={ClipboardPaste} accent={COLORS.blue} onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste market</Btn>
           </PageHeader>
           <Eyebrow>Macro — tap a tile for the rule, or set a value by hand</Eyebrow>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {macro.tiles.map(t => (
-              <div key={t.key} className="hcard" onClick={() => setDrillTile(drillTile === t.key ? null : t.key)} style={{ flex: "1 1 120px", background: COLORS.panel, border: `1px solid ${drillTile === t.key ? tileColor(t.color) : COLORS.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer", position: "relative" }}>
-                <a href={MACRO_LINKS[t.key]} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="Open source" style={{ position: "absolute", top: 8, right: 8, color: COLORS.dim, textDecoration: "none", fontSize: 12 }}>↗</a>
-                <div style={{ fontSize: 11, color: COLORS.dim }}>{t.label}</div>
-                <div style={{ fontSize: 19, fontWeight: 700, color: tileColor(t.color) }}>{t.val ?? "—"}</div>
-                <div style={{ fontSize: 10, color: COLORS.dim }}>{t.note}</div>
-                {drillTile === t.key && (
-                  <div onClick={e => e.stopPropagation()} style={{ fontSize: 10, color: COLORS.gold, marginTop: 6, borderTop: `1px solid ${COLORS.border}`, paddingTop: 6 }}>
-                    Rule: {t.rule}
-                    <input type="number" step="any" defaultValue={t.val ?? ""} placeholder="set value" onKeyDown={e => { if (e.key === "Enter") { updateMacro(t.key, e.target.value); setDrillTile(null); } }} onBlur={e => { if (e.target.value !== String(t.val ?? "")) updateMacro(t.key, e.target.value); }} style={{ ...inp, marginTop: 6, fontSize: 12, padding: 4 }} />
-                  </div>
-                )}
+          <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, display: "flex", flexWrap: "wrap", overflow: "hidden" }}>
+            {macro.tiles.map((t, i) => (
+              <div key={t.key} className="hcard" onClick={() => setDrillTile(drillTile === t.key ? null : t.key)} style={{ flex: "1 1 130px", padding: "13px 16px", cursor: "pointer", borderLeft: i > 0 ? `1px solid ${COLORS.border}` : "none", background: drillTile === t.key ? COLORS.panelLight : "transparent", position: "relative" }}>
+                <a href={MACRO_LINKS[t.key]} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="Open source" style={{ position: "absolute", top: 9, right: 10, color: COLORS.dim, textDecoration: "none", fontSize: 11 }}>↗</a>
+                <div style={{ fontSize: 11.5, color: COLORS.dim, marginBottom: 3 }}>{t.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em", color: tileColor(t.color) }}>{t.val ?? "—"}</div>
+                <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 2 }}>{t.note}</div>
               </div>
             ))}
-            <div style={{ flex: "1.4 1 200px", background: COLORS.panel, border: `2px solid ${macro.temp.color}`, borderRadius: 10, padding: "10px 14px" }}>
-              <div style={{ fontSize: 11, color: COLORS.dim }}>MARKET TEMPERATURE</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: macro.temp.color }}>{macro.temp.label}</div>
-              <div style={{ fontSize: 11 }}>{macro.temp.advice}</div>
+            <div style={{ flex: "1.3 1 170px", padding: "13px 16px", borderLeft: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: 11.5, color: COLORS.dim, marginBottom: 3 }}>Market temperature</div>
+              <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em", color: macro.temp.color }}>{macro.temp.label}</div>
+              <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 2 }}>{macro.temp.advice}</div>
             </div>
           </div>
-          {data.marketRead && <div style={{ marginTop: 10, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, lineHeight: 1.55 }}>🌍 <b>The backdrop:</b> {data.marketRead}</div>}
+          {drillTile && (() => { const t = macro.tiles.find(x => x.key === drillTile); return t && (
+            <div style={{ marginTop: 10, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "12px 16px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12.5, color: COLORS.dim, flex: 1, minWidth: 220 }}><b style={{ color: COLORS.text }}>{t.label}</b> — {t.rule}</div>
+              <input type="number" step="any" defaultValue={t.val ?? ""} placeholder="Set value by hand" onKeyDown={e => { if (e.key === "Enter") { updateMacro(t.key, e.target.value); setDrillTile(null); } }} onBlur={e => { if (e.target.value !== String(t.val ?? "")) updateMacro(t.key, e.target.value); }} style={{ background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 12px", fontSize: 13, fontFamily: "inherit", width: 170 }} />
+            </div>
+          ); })()}
+                    {data.marketRead && <div style={{ marginTop: 10, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, lineHeight: 1.55 }}>🌍 <b>The backdrop:</b> {data.marketRead}</div>}
           <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.dim, letterSpacing: 1 }}>THIS WEEK — GENERAL MARKET</div>
             {data.headlinesDate && <span style={{ fontSize: 10, color: COLORS.dim }}>updated {data.headlinesDate}</span>}
@@ -1134,7 +1164,7 @@ export default function App() {
         });
         pfStocks.forEach(p => {
           const t = (p.ticker || "").toUpperCase();
-          if (!boardByTicker[t]) flags.push({ lvl: "YELLOW", t, msg: `In your portfolio but not on the board — never screened${p.marketValue ? ` ($${Math.round(p.marketValue).toLocaleString()} exposure)` : ""}. Run a FULL SCAN.` });
+          if (!boardByTicker[t]) flags.push({ lvl: "YELLOW", t, msg: `In your portfolio but not on the board — never screened${p.marketValue ? ` (${fmtD(p.marketValue)} exposure)` : ""}. Run a FULL SCAN.` });
         });
         const flagColor = { RED: COLORS.red, YELLOW: COLORS.yellow, GOLD: COLORS.gold, GREEN: COLORS.green, INFO: COLORS.blue };
         return (
@@ -1148,7 +1178,7 @@ export default function App() {
 
             {pf && (
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                {[["Market value", `$${Math.round(totVal).toLocaleString()}`, COLORS.text], ["Unrealized P&L", `${totPL >= 0 ? "+" : "-"}$${Math.round(Math.abs(totPL)).toLocaleString()}`, totPL >= 0 ? COLORS.green : COLORS.red], ["Holdings", pf.positions.length, COLORS.text], ...(pf.cash != null ? [["Cash", `$${Math.round(pf.cash).toLocaleString()}`, COLORS.text]] : [])].map(([lbl, val, col], i) => (
+                {[["Market value", fmtD(totVal), COLORS.text], ["Unrealized P&L", `${totPL >= 0 ? "+" : ""}${fmtD(totPL)}`, totPL >= 0 ? COLORS.green : COLORS.red], ["Holdings", pf.positions.length, COLORS.text], ...(pf.cash != null ? [["Cash", fmtD(pf.cash), COLORS.text]] : [])].map(([lbl, val, col], i) => (
                   <div key={i} style={{ flex: "1 1 140px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 14px" }}>
                     <div style={{ fontSize: 10, color: COLORS.dim }}>{lbl}</div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: col }}>{val}</div>
@@ -1188,8 +1218,8 @@ export default function App() {
                         <span style={{ color: COLORS.dim, fontSize: 10, textTransform: "uppercase" }}>{p.kind || "stock"}</span>
                         <span>{p.qty ?? "—"}</span>
                         <span>{p.avgPrice != null ? `$${p.avgPrice}` : "—"}</span>
-                        <span>{p.marketValue != null ? `$${Math.round(p.marketValue).toLocaleString()}` : "—"}</span>
-                        <span style={{ fontWeight: 700, color: (p.unrealizedPL || 0) >= 0 ? COLORS.green : COLORS.red }}>{p.unrealizedPL != null ? `${p.unrealizedPL >= 0 ? "+" : "-"}$${Math.round(Math.abs(p.unrealizedPL)).toLocaleString()}` : "—"}</span>
+                        <span>{fmtD(p.marketValue)}</span>
+                        <span style={{ fontWeight: 700, color: (p.unrealizedPL || 0) >= 0 ? COLORS.green : COLORS.red }}>{p.unrealizedPL != null ? `${p.unrealizedPL >= 0 ? "+" : ""}${fmtD(p.unrealizedPL)}` : "—"}</span>
                         <span style={{ fontWeight: 700, color: b ? decColor(b.calc.decision) : COLORS.dim }}>{b ? b.calc.composite.toFixed(1) : "—"}</span>
                         <span style={{ fontSize: 10, fontWeight: 700, color: b && call ? (call === "ADD" ? COLORS.green : call === "EXIT" ? COLORS.red : call === "TRIM" ? COLORS.yellow : call === "RIDE_HYPE" ? COLORS.gold : COLORS.blue) : COLORS.dim }}>{b ? (call ? call.split("_").join(" ") : "unscanned") : "off-board"}</span>
                       </div>
@@ -1229,11 +1259,31 @@ export default function App() {
         <div className="room" style={{ padding: "26px 28px 48px", maxWidth: 1080, margin: "0 auto" }}>
           {!sel ? (
             <>
-              <PageHeader title="Trading desk" sub="Positions and watchlist — tap a card to open the analysis">
+              <PageHeader title="Trading desk" sub="Positions and watchlist — tap a row to open the analysis">
                 <Btn icon={ClipboardPaste} accent={COLORS.blue} title="Paste a full_scan JSON to add or refresh a stock" onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste full scan</Btn>
               </PageHeader>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+                <input value={deskQuery} onChange={e => setDeskQuery(e.target.value)} placeholder="Search ticker or name…" style={{ background: COLORS.panel, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 13px", fontSize: 13, fontFamily: "inherit", width: 230 }} />
+                {[["all", "All"], ["GO", "GO"], ["WATCH", "Watch"], ["NO-GO", "No-go"], ["DISQUALIFIED", "DQ"], ["held", "Held"]].map(([k, lbl]) => (
+                  <button key={k} onClick={() => setDeskFilter(k)} style={{ background: deskFilter === k ? COLORS.panelLight : "transparent", color: deskFilter === k ? COLORS.text : COLORS.dim, border: `1px solid ${deskFilter === k ? "rgba(255,255,255,0.22)" : COLORS.border}`, borderRadius: 999, padding: "5px 13px", cursor: "pointer", fontSize: 12.5, fontWeight: 500, fontFamily: "inherit" }}>{lbl}</button>
+                ))}
+              </div>
+              {(() => {
+                const q = deskQuery.trim().toLowerCase();
+                const shown = sorted.filter(s =>
+                  (!q || s.ticker.toLowerCase().includes(q) || (s.name || "").toLowerCase().includes(q)) &&
+                  (deskFilter === "all" || (deskFilter === "held" ? s.held : s.calc.decision === deskFilter)));
+                if (sorted.length === 0) return (
+                  <div style={{ border: `1px dashed ${COLORS.border}`, borderRadius: 12, padding: "54px 24px", textAlign: "center" }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Nothing on the board yet</div>
+                    <div style={{ fontSize: 13, color: COLORS.dim, maxWidth: 380, margin: "0 auto 18px" }}>Run a FULL SCAN on a ticker through the skill in any Claude chat, then paste the block here — the stock lands with its whole dossier.</div>
+                    <Btn icon={ClipboardPaste} onClick={() => { setSyncModal(true); setSyncError(""); }} style={{ margin: "0 auto" }}>Paste full scan</Btn>
+                  </div>
+                );
+                if (shown.length === 0) return <div style={{ padding: "34px 20px", textAlign: "center", color: COLORS.dim, fontSize: 13, border: `1px solid ${COLORS.border}`, borderRadius: 12 }}>Nothing matches — clear the search or filter.</div>;
+                return (
               <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
-                {sorted.map((s, i) => {
+                {shown.map((s, i) => {
                   const delta = s.prevScore != null ? s.calc.composite - s.prevScore : null;
                   const pxE = s.held && s.entryPrice ? (s.price - s.entryPrice) / s.entryPrice * 100 : null;
                   const vc = s.claudeScan?.verdict?.call;
@@ -1261,6 +1311,8 @@ export default function App() {
                   );
                 })}
               </div>
+                );
+              })()}
             </>
           ) : selCluster == null && !histDate ? (
             <>
@@ -1273,26 +1325,37 @@ export default function App() {
                 <Btn icon={ClipboardPaste} accent={COLORS.blue} onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste result</Btn>
               </div>
 
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 22, marginBottom: 14 }}>
-                <div style={{ display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
-                  <ScoreRing score={sel.calc.composite} size={86} decision={sel.calc.decision} />
-                  <div style={{ flex: 1, minWidth: 200 }}>
-                    <div style={{ fontSize: 24, fontWeight: 800 }}>{sel.ticker} <span style={{ fontSize: 13, color: COLORS.dim, fontWeight: 400 }}>{sel.name} · {sel.sector}</span></div>
-                    <div style={{ marginTop: 4, fontSize: 13 }}><Delta v={sel.prevScore != null ? sel.calc.composite - sel.prevScore : null} /> <span style={{ color: COLORS.dim }}>score vs last week</span></div>
-                    <div style={{ marginTop: 8, display: "flex", gap: 16, flexWrap: "wrap", fontSize: 13 }}>
-                      <span>💲 ${sel.price?.toFixed(2)} <Delta v={sel.prevPrice ? (sel.price - sel.prevPrice) / sel.prevPrice * 100 : null} suffix="% wk" /></span>
-                      {sel.held && sel.entryPrice && <span>📍 Entry ${sel.entryPrice} <Delta v={(sel.price - sel.entryPrice) / sel.entryPrice * 100} suffix="%" /></span>}
-                      <span style={{ color: sel.calc.daysToCatalyst != null && sel.calc.daysToCatalyst <= 7 ? COLORS.yellow : COLORS.dim }}>⏱ {sel.calc.daysToCatalyst != null ? `${sel.catalystType} in ${sel.calc.daysToCatalyst}d` : "No catalyst set"}</span>
-                    </div>
-                    {sel.lastFetch && <div style={{ marginTop: 6, fontSize: 11, color: COLORS.dim }}>Data as of {sel.lastFetch.date}{sel.lastFetch.currency ? ` · ${sel.lastFetch.currency}` : ""}{sel.lastFetch.missing?.length ? ` · missing: ${sel.lastFetch.missing.join(", ")}` : " · all fields"}{sel.lastFetch.notes ? ` · ${sel.lastFetch.notes}` : ""}</div>}
-                  </div>
-                  <div style={{ textAlign: "center", padding: "12px 22px", borderRadius: 12, background: COLORS.bg, border: `2px solid ${sigColor(sel.calc.sigLevel)}` }}>
-                    <div style={{ fontSize: 10, color: COLORS.dim, letterSpacing: 1 }}>SIGNAL STATUS</div>
-                    <div style={{ fontSize: 22, fontWeight: 800, color: sigColor(sel.calc.sigLevel) }}>{sel.calc.sigLevel}</div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: decColor(sel.calc.decision), marginTop: 2 }}>{sel.calc.decision}</div>
-                    {(sel.overrides || []).length > 0 && <div style={{ fontSize: 10, color: COLORS.yellow, marginTop: 2 }}>{sel.overrides.length} overridden</div>}
-                  </div>
+              {/* HERO */}
+              <div style={{ margin: "6px 0 20px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 42, fontWeight: 700, letterSpacing: "-0.045em", lineHeight: 1 }}>{sel.ticker}</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, color: decColor(sel.calc.decision), border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: "4px 13px", fontWeight: 500 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: sigColor(sel.calc.sigLevel) }} />{sel.calc.decision}
+                  </span>
+                  {sel.claudeScan?.verdict?.call && <span style={{ fontSize: 12.5, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: "4px 13px", fontWeight: 500 }}>{sel.claudeScan.verdict.call.split("_").join(" ").toLowerCase()}</span>}
+                  {(sel.overrides || []).length > 0 && <span style={{ fontSize: 12, color: COLORS.yellow }}>{sel.overrides.length} overridden</span>}
                 </div>
+                <div style={{ fontSize: 14, color: COLORS.dim, marginTop: 8 }}>{sel.name}{sel.sector ? ` · ${sel.sector}` : ""}{sel.lastFetch ? ` · data as of ${sel.lastFetch.date}${sel.lastFetch.missing?.length ? ` · missing: ${sel.lastFetch.missing.join(", ")}` : ""}` : ""}</div>
+              </div>
+
+              {/* STAT STRIP */}
+              <div style={{ display: "flex", flexWrap: "wrap", border: `1px solid ${COLORS.border}`, borderRadius: 12, marginBottom: 16, overflow: "hidden" }}>
+                {[
+                  ["Composite", <span style={{ color: decColor(sel.calc.decision) }}>{sel.calc.composite.toFixed(1)}</span>, <Delta v={sel.prevScore != null ? sel.calc.composite - sel.prevScore : null} />],
+                  ["Price", sel.price != null ? `$${sel.price.toFixed(2)}` : "—", <Delta v={sel.prevPrice && sel.price ? (sel.price - sel.prevPrice) / sel.prevPrice * 100 : null} suffix="%" />],
+                  ...(sel.held && sel.entryPrice ? [["Entry", `$${sel.entryPrice}`, <Delta v={sel.price ? (sel.price - sel.entryPrice) / sel.entryPrice * 100 : null} suffix="%" />]] : []),
+                  ["Catalyst", sel.calc.daysToCatalyst != null ? `${sel.calc.daysToCatalyst}d` : "—", <span style={{ fontSize: 11.5, color: sel.calc.daysToCatalyst != null && sel.calc.daysToCatalyst <= 7 ? COLORS.yellow : COLORS.dim }}>{sel.catalystType || "none set"}</span>],
+                  ["Scanned", sel.claudeScan ? sel.claudeScan.date.slice(5) : "never", <span style={{ fontSize: 11.5, color: COLORS.dim }}>{sel.claudeScan ? sel.claudeScan.kind.split("_")[0] : "run full scan"}</span>],
+                ].map(([lbl, val, sub], i) => (
+                  <div key={i} style={{ flex: "1 1 120px", padding: "14px 18px", borderLeft: i > 0 ? `1px solid ${COLORS.border}` : "none" }}>
+                    <div style={{ fontSize: 11.5, color: COLORS.dim, marginBottom: 3 }}>{lbl}</div>
+                    <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>{val}</div>
+                    <div style={{ marginTop: 2, fontSize: 11.5 }}>{sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginBottom: 14 }}>
                 {sel.calc.signals.length > 0 && (
                   <div style={{ marginTop: 14, borderTop: `1px solid ${COLORS.border}`, paddingTop: 12 }}>
                     {sel.calc.signals.map((sig, i) => {
@@ -1451,10 +1514,10 @@ export default function App() {
                     {snap.summary && <div style={{ fontSize: 12, marginBottom: 12, padding: "8px 10px", background: COLORS.bg, borderRadius: 10, border: `1px solid ${COLORS.border}`, lineHeight: 1.5 }}>{snap.summary}</div>}
                     {snap.fields && (
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-                        {[["Price", snap.fields.price, "$"], ["Mkt Cap", snap.fields.mktCap, "$", "M"], ["Debt", snap.fields.debt, "$", "M"], ["Cash", snap.fields.cash, "$", "M"], ["Burn/qtr", snap.fields.burnQ, "$", "M"], ["Volume", snap.fields.volume, "", ""], ["Insider net", snap.fields.insiderNet, "", " sh"]].map(([lbl, val, pre, suf], fi) => (
+                        {[["Price", snap.fields.price != null ? `$${snap.fields.price}` : "—"], ["Mkt cap", fmtM(snap.fields.mktCap)], ["Debt", fmtM(snap.fields.debt)], ["Cash", fmtM(snap.fields.cash)], ["Burn/qtr", fmtM(snap.fields.burnQ)], ["Volume", fmtSh(snap.fields.volume)], ["Insider net", `${fmtSh(snap.fields.insiderNet)} sh`]].map(([lbl, val], fi) => (
                           <div key={fi} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "6px 10px" }}>
                             <div style={{ fontSize: 9, color: COLORS.dim }}>{lbl}</div>
-                            <div style={{ fontSize: 13, fontWeight: 700 }}>{val != null ? `${pre}${typeof val === "number" ? val.toLocaleString() : val}${suf || ""}` : "—"}</div>
+                            <div style={{ fontSize: 13, fontWeight: 700 }}>{val}</div>
                           </div>
                         ))}
                       </div>
