@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Gauge, LayoutList, Briefcase, Settings, Zap, X, Upload, Download, MessageSquare, ClipboardPaste, Radar, TrendingUp, TrendingDown } from "lucide-react";
+import { Gauge, LayoutList, Briefcase, Settings, Zap, X, Upload, Download, MessageSquare, ClipboardPaste, Compass, Eye, Pin, ShieldAlert, ArrowLeft, Globe, Flag, Cloud, Scale, Pencil, Plus, RotateCcw, StickyNote, Timer, Hourglass, DollarSign, MapPin, Camera, AlertTriangle, Database } from "lucide-react";
 
 // ─── RULES ENGINE ───────────────────────────────────────────────────────────
 const DEFAULT_RULES = {
@@ -193,23 +193,24 @@ const SAMPLE = {
   ],
 };
 
-// Soft dark: deep blue-ink base, raised panels, pastel state colors that glow.
+// Geist-style: near-black canvas, hairline borders, monochrome-first.
+// Color appears only where it means something: status, deltas, verdicts.
 const COLORS = {
-  bg: "#101321", panel: "#171B2C", panelLight: "#202538", border: "#262C42",
-  text: "#EDEFF7", dim: "#7C84A3", gold: "#E9B458", green: "#5EE7A3", red: "#FF7A8A", yellow: "#F5C26B", blue: "#7FA6FF",
+  bg: "#0A0A0B", panel: "#111113", panelLight: "#17171A", border: "rgba(255,255,255,0.09)",
+  text: "#EDEDEF", dim: "#8F8F98", gold: "#F5A623", green: "#31C48D", red: "#F4434D", yellow: "#F5A623", blue: "#52A8FF",
 };
-const glow = (c, s = 16) => `0 0 ${s}px ${c}40`;
+const glow = () => "none";
 const GLOBAL_CSS = `
-  button { transition: transform .16s ease, box-shadow .16s ease, background .16s ease, color .16s ease, border-color .16s ease; }
-  button:hover { transform: translateY(-1px); }
-  button:active { transform: translateY(0) scale(.97); }
-  input, textarea, select { transition: border-color .16s ease, box-shadow .16s ease; }
-  input:focus, textarea:focus { outline: none; border-color: ${COLORS.blue} !important; box-shadow: 0 0 0 3px ${COLORS.blue}26; }
-  .room { animation: rise .32s ease both; }
-  .hcard { transition: transform .18s ease, background .18s ease, box-shadow .18s ease, border-color .18s ease; }
-  .hcard:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(0,0,0,.38); }
-  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-  ::selection { background: ${COLORS.blue}55; }
+  button { transition: background .14s ease, color .14s ease, border-color .14s ease, opacity .14s ease; }
+  button:active { opacity: .8; }
+  input, textarea, select { transition: border-color .14s ease, box-shadow .14s ease; }
+  input:focus, textarea:focus { outline: none; border-color: rgba(255,255,255,0.28) !important; box-shadow: 0 0 0 3px rgba(255,255,255,0.06); }
+  .room { animation: rise .25s ease both; }
+  .hcard { transition: background .14s ease, border-color .14s ease; }
+  .hcard:hover { background: #17171A; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  ::selection { background: rgba(82,168,255,0.35); }
+  a { color: inherit; }
   @media (prefers-reduced-motion: reduce) { *, .room, .hcard { animation: none !important; transition: none !important; } }
 `;
 // Counts a score up/down to its new value — the "alive" numbers.
@@ -245,34 +246,33 @@ function useWide(bp = 860) {
   }, [bp]);
   return wide;
 }
-function Btn({ children, icon: I, color = COLORS.dim, accent, onClick, title, style }) {
-  const c = accent || color;
+function Btn({ children, icon: I, accent, primary, onClick, title, style }) {
   return (
-    <button onClick={onClick} title={title} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: accent ? `${c}14` : "transparent", color: accent ? c : COLORS.dim, border: `1px solid ${accent ? `${c}55` : COLORS.border}`, borderRadius: 10, padding: "8px 15px", cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "inherit", ...style }}>
-      {I && <I size={15} strokeWidth={2.2} />} {children}
+    <button onClick={onClick} title={title} onMouseEnter={e => !primary && (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => !primary && (e.currentTarget.style.background = "transparent")} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: primary ? COLORS.text : "transparent", color: primary ? "#0A0A0B" : COLORS.text, border: `1px solid ${primary ? COLORS.text : COLORS.border}`, borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 500, fontFamily: "inherit", ...style }}>
+      {I && <I size={15} strokeWidth={2} color={primary ? "#0A0A0B" : (accent || COLORS.dim)} />} {children}
     </button>
   );
 }
 function PageHeader({ title, sub, children }) {
   return (
-    <div style={{ display: "flex", alignItems: "flex-end", gap: 14, flexWrap: "wrap", marginBottom: 26 }}>
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 14, flexWrap: "wrap", marginBottom: 34 }}>
       <div style={{ minWidth: 200 }}>
-        <div style={{ fontSize: 27, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.1 }}>{title}</div>
-        {sub && <div style={{ fontSize: 13.5, color: COLORS.dim, marginTop: 5 }}>{sub}</div>}
+        <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: "-0.035em", lineHeight: 1.08 }}>{title}</div>
+        {sub && <div style={{ fontSize: 14, color: COLORS.dim, marginTop: 6, fontWeight: 400 }}>{sub}</div>}
       </div>
       <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>{children}</div>
     </div>
   );
 }
 function Eyebrow({ children, style }) {
-  return <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.dim, letterSpacing: 1.4, textTransform: "uppercase", marginBottom: 10, ...style }}>{children}</div>;
+  return <div style={{ fontSize: 12, fontWeight: 500, color: COLORS.dim, letterSpacing: 0.2, marginBottom: 10, ...style }}>{children}</div>;
 }
 
 function ScoreRing({ score, size = 52, decision }) {
   const pct = score != null ? Math.min(score / 10, 1) : 0, r = size / 2 - 4, c = 2 * Math.PI * r;
   const col = decision ? decColor(decision) : COLORS.gold;
   return (
-    <svg width={size} height={size} style={{ filter: decision === "GO" ? `drop-shadow(0 0 8px ${col}66)` : "none" }}>
+    <svg width={size} height={size}>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={COLORS.border} strokeWidth="4" />
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={col} strokeWidth="4" strokeDasharray={`${c * pct} ${c}`} strokeLinecap="round" transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ transition: "stroke-dasharray .6s ease, stroke .3s ease" }} />
       <text x="50%" y="54%" textAnchor="middle" dominantBaseline="middle" fill={COLORS.text} fontSize={size / 3.4} fontWeight="700">{score != null ? score.toFixed(1) : "—"}</text>
@@ -282,7 +282,7 @@ function ScoreRing({ score, size = 52, decision }) {
 function HeadlineList({ items }) {
   if (!items?.length) return null;
   return (
-    <div style={{ marginTop: 8, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "8px 14px" }}>
+    <div style={{ marginTop: 8, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 14px" }}>
       {items.map((h, i) => (
         <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 0", borderBottom: i < items.length - 1 ? `1px solid ${COLORS.border}` : "none", fontSize: 12, flexWrap: "wrap" }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: h.impact === "tailwind" ? COLORS.green : h.impact === "headwind" ? COLORS.red : COLORS.dim, minWidth: 68, textTransform: "uppercase" }}>{h.impact}</span>
@@ -923,57 +923,42 @@ export default function App() {
   const sel = selStock ? computed.find(s => s.ticker === selStock) : null;
   const generalHeadlines = (data.headlines || []).filter(h => h.sector === "General");
   const sectorHeadlines = (data.headlines || []).filter(h => h.sector !== "General");
-  const inp = { width: "100%", background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 6, marginTop: 4, boxSizing: "border-box", fontFamily: "inherit" };
+  const inp = { width: "100%", background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 6, marginTop: 4, boxSizing: "border-box", fontFamily: "inherit" };
   const wide = useWide();
-  const NAV_ITEMS = [["cockpit", "Cockpit", Gauge], ["desk", "Trading desk", LayoutList], ["positions", "Positions", Briefcase], ["config", "Config", Settings]];
+  const NAV_ITEMS = [["cockpit", "Cockpit"], ["desk", "Trading desk"], ["positions", "Positions"], ["config", "Config"]];
   const goRoom = r => { setRoom(r); if (r !== "desk") { setSelStock(null); setSelCluster(null); } };
 
   return (
-    <div style={{ fontFamily: "'Outfit', 'Segoe UI', system-ui, sans-serif", fontVariantNumeric: "tabular-nums", background: COLORS.bg, minHeight: "100vh", color: COLORS.text }}>
+    <div style={{ fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", fontVariantNumeric: "tabular-nums", background: COLORS.bg, minHeight: "100vh", color: COLORS.text }}>
       <style>{GLOBAL_CSS}</style>
-      <div style={{ display: "flex", minHeight: "100vh", alignItems: "stretch" }}>
-
-      {/* SIDEBAR (wide screens) */}
-      {wide && (
-        <aside style={{ width: 218, flexShrink: 0, borderRight: `1px solid ${COLORS.border}`, padding: "22px 14px", display: "flex", flexDirection: "column", gap: 3, position: "sticky", top: 0, alignSelf: "flex-start", height: "100vh", boxSizing: "border-box" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 10px 22px" }}>
-            <div style={{ width: 32, height: 32, borderRadius: 10, background: `${COLORS.gold}1A`, border: `1px solid ${COLORS.gold}55`, boxShadow: glow(COLORS.gold, 10), display: "flex", alignItems: "center", justifyContent: "center" }}><Zap size={15} color={COLORS.gold} /></div>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 14.5, letterSpacing: "-0.01em", lineHeight: 1.15 }}>The Screener</div>
-              <div style={{ fontSize: 10.5, color: COLORS.dim }}>micro-cap radar</div>
-            </div>
-          </div>
-          {NAV_ITEMS.map(([r, lbl, I]) => (
-            <button key={r} onClick={() => goRoom(r)} style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left", background: room === r ? COLORS.panelLight : "transparent", color: room === r ? COLORS.text : COLORS.dim, border: "none", borderRadius: 11, padding: "10px 12px", cursor: "pointer", fontSize: 13.5, fontWeight: 600, fontFamily: "inherit" }}>
-              <I size={17} strokeWidth={2.1} color={room === r ? COLORS.gold : COLORS.dim} /> {lbl}
-            </button>
-          ))}
-          <div style={{ flex: 1 }} />
-          <div style={{ fontSize: 11, color: COLORS.dim, padding: "0 12px", lineHeight: 1.7 }}>
-            {data.stocks.length} on the board<br />{positions.length} held{data.portfolio ? ` · imported ${data.portfolio.date.slice(5)}` : ""}<br />
-            <span style={{ color: syncStatus === "synced" ? COLORS.green : syncStatus === "error" || syncStatus === "badkey" ? COLORS.red : COLORS.dim }}>
-              ● cloud {syncStatus === "off" ? "sync off" : syncStatus === "badkey" ? "bad key" : syncStatus}
+      {/* TOP BAR — Vercel style: identity row + underlined tab nav */}
+      <div style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+        <div style={{ maxWidth: 1120, margin: "0 auto", padding: "0 28px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "15px 0 11px" }}>
+            <div style={{ width: 26, height: 26, borderRadius: 7, background: COLORS.text, display: "flex", alignItems: "center", justifyContent: "center" }}><Zap size={14} color="#0A0A0B" /></div>
+            <span style={{ fontWeight: 600, fontSize: 14.5, letterSpacing: "-0.01em" }}>The Screener</span>
+            <span style={{ color: COLORS.border, fontSize: 16 }}>/</span>
+            <span style={{ color: COLORS.dim, fontSize: 13.5 }}>{data.stocks.length} on the board · {positions.length} held</span>
+            <div style={{ flex: 1 }} />
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.dim }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: syncStatus === "synced" ? COLORS.green : syncStatus === "error" || syncStatus === "badkey" ? COLORS.red : COLORS.dim }} />
+              {syncStatus === "off" ? "local" : syncStatus === "badkey" ? "bad key" : syncStatus}
             </span>
           </div>
-        </aside>
-      )}
-
-      <div style={{ flex: 1, minWidth: 0 }}>
-
-      {/* TOP BAR (narrow screens) */}
-      {!wide && (
-        <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}`, gap: 8, overflowX: "auto" }}>
-          <div style={{ width: 28, height: 28, minWidth: 28, borderRadius: 9, background: `${COLORS.gold}1A`, border: `1px solid ${COLORS.gold}55`, display: "flex", alignItems: "center", justifyContent: "center" }}><Zap size={13} color={COLORS.gold} /></div>
-          {NAV_ITEMS.map(([r, lbl, I]) => (
-            <button key={r} onClick={() => goRoom(r)} style={{ display: "inline-flex", alignItems: "center", gap: 7, background: room === r ? COLORS.panelLight : "transparent", color: room === r ? COLORS.text : COLORS.dim, border: `1px solid ${room === r ? COLORS.border : "transparent"}`, borderRadius: 999, padding: "6px 14px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", fontFamily: "inherit" }}><I size={14} color={room === r ? COLORS.gold : COLORS.dim} /> {lbl}</button>
-          ))}
+          <div style={{ display: "flex", gap: 4, overflowX: "auto" }}>
+            {NAV_ITEMS.map(([r, lbl]) => (
+              <button key={r} onClick={() => goRoom(r)} onMouseEnter={e => room !== r && (e.currentTarget.style.color = COLORS.text)} onMouseLeave={e => room !== r && (e.currentTarget.style.color = COLORS.dim)} style={{ background: "transparent", color: room === r ? COLORS.text : COLORS.dim, border: "none", borderBottom: `2px solid ${room === r ? COLORS.text : "transparent"}`, padding: "9px 13px 11px", cursor: "pointer", fontSize: 13.5, fontWeight: 500, whiteSpace: "nowrap", fontFamily: "inherit" }}>{lbl}</button>
+            ))}
+          </div>
         </div>
-      )}
+      </div>
+
+      <div style={{ maxWidth: 1120, margin: "0 auto" }}>
 
       {/* STATUS TOAST */}
       {fetchMsg && (
-        <div onClick={() => setFetchMsg("")} style={{ margin: "14px 26px 0", background: COLORS.panelLight, border: `1px solid ${COLORS.blue}44`, borderRadius: 12, boxShadow: glow(COLORS.blue, 12), padding: "9px 16px", fontSize: 12.5, color: COLORS.text, cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
-          <Zap size={14} color={COLORS.blue} style={{ minWidth: 14 }} /><span>{fetchMsg}</span><X size={13} color={COLORS.dim} style={{ marginLeft: "auto", minWidth: 13 }} />
+        <div onClick={() => setFetchMsg("")} style={{ margin: "16px 28px 0", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 16px", fontSize: 13, color: COLORS.text, cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
+          <span style={{ width: 7, height: 7, minWidth: 7, borderRadius: "50%", background: COLORS.blue }} /><span>{fetchMsg}</span><X size={13} color={COLORS.dim} style={{ marginLeft: "auto", minWidth: 13 }} />
         </div>
       )}
 
@@ -985,9 +970,9 @@ export default function App() {
         const isDiscuss = briefModal.mode === "discuss";
         const accent = isMarket || isPortfolio ? COLORS.blue : isDiscuss ? COLORS.green : COLORS.gold;
         return (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ background: COLORS.panel, border: `1px solid ${accent}`, borderRadius: 18, padding: 24, width: "min(720px, 94vw)" }}>
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>{isPortfolio ? "💼 Portfolio import brief" : isMarket ? "🌍 Market update brief" : isDiscuss ? `💬 Discuss ${briefModal.ticker} with Claude` : `📤 Update scan brief — ${briefModal.ticker}`}</div>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(8,10,18,0.78)", backdropFilter: "blur(3px)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 14 }}>
+            <div style={{ background: COLORS.panel, border: `1px solid ${accent}`, borderRadius: 20, padding: 26, width: "min(720px, 94vw)" }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>{isPortfolio ? "Portfolio import brief" : isMarket ? "Market update brief" : isDiscuss ? `Discuss ${briefModal.ticker} with Claude` : `Update scan brief — ${briefModal.ticker}`}</div>
               <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>{isPortfolio
                 ? "Copy this into any Claude chat and ATTACH a screenshot of your broker holdings (IBKR positions page works great). The skill transcribes every row and returns a portfolio_update block — paste it back via Paste portfolio and the book reconciles itself."
                 : isMarket
@@ -998,7 +983,7 @@ export default function App() {
               <textarea id="briefTextArea" readOnly value={text} onFocus={e => e.target.select()} style={{ ...inp, height: isMarket || isPortfolio ? 120 : 280, fontSize: 11, fontFamily: "monospace" }} />
               <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end", alignItems: "center" }}>
                 {copyMsg && <span style={{ fontSize: 12, color: COLORS.green }}>{copyMsg}</span>}
-                <button onClick={() => copyText(text)} style={{ background: accent, color: "#0E1420", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>📋 Copy</button>
+                <button onClick={() => copyText(text)} style={{ background: accent, color: "#0E1420", border: "none", borderRadius: 10, padding: "8px 18px", cursor: "pointer", fontWeight: 700 }}>Copy brief</button>
                 <button onClick={() => { setBriefModal(null); setCopyMsg(""); }} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 16px", cursor: "pointer" }}>Close</button>
               </div>
             </div>
@@ -1008,9 +993,9 @@ export default function App() {
 
       {/* SYNC MODAL */}
       {syncModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 18, padding: 24, width: "min(720px, 94vw)" }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>⬇ Sync from Claude</div>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(8,10,18,0.78)", backdropFilter: "blur(3px)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 14 }}>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 20, padding: 26, width: "min(720px, 94vw)" }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>📥 Paste from Claude</div>
             <div style={{ color: COLORS.dim, fontSize: 12, marginBottom: 12 }}>Paste any JSON block Claude returns — a <code style={{ color: COLORS.blue }}>full_scan</code> (adds or overwrites a stock with the deep dossier), an <code style={{ color: COLORS.blue }}>update_scan</code> (refreshes a tracked stock, draws the diff, freezes a snapshot — also what a finalized DISCUSS emits), a <code style={{ color: COLORS.blue }}>weekly_update</code>, a <code style={{ color: COLORS.blue }}>stock_update</code>, or an old qual-only block. Manual values survive: only fields present in the block are overwritten.</div>
             <textarea value={syncText} onChange={e => { setSyncText(e.target.value); setSyncError(""); }} placeholder='{"ticker":"ATYR","G":[...],"H":[...],"I":[...]}' style={{ ...inp, height: 200, fontSize: 11, fontFamily: "monospace" }} />
             {syncError && <div style={{ color: COLORS.red, fontSize: 12, marginTop: 8 }}>⚠️ {syncError}</div>}
@@ -1032,7 +1017,7 @@ export default function App() {
           <Eyebrow>Macro — tap a tile for the rule, or set a value by hand</Eyebrow>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {macro.tiles.map(t => (
-              <div key={t.key} className="hcard" onClick={() => setDrillTile(drillTile === t.key ? null : t.key)} style={{ flex: "1 1 120px", background: COLORS.panel, border: `1px solid ${drillTile === t.key ? tileColor(t.color) : COLORS.border}`, borderRadius: 14, padding: "10px 12px", cursor: "pointer", position: "relative" }}>
+              <div key={t.key} className="hcard" onClick={() => setDrillTile(drillTile === t.key ? null : t.key)} style={{ flex: "1 1 120px", background: COLORS.panel, border: `1px solid ${drillTile === t.key ? tileColor(t.color) : COLORS.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer", position: "relative" }}>
                 <a href={MACRO_LINKS[t.key]} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="Open source" style={{ position: "absolute", top: 8, right: 8, color: COLORS.dim, textDecoration: "none", fontSize: 12 }}>↗</a>
                 <div style={{ fontSize: 11, color: COLORS.dim }}>{t.label}</div>
                 <div style={{ fontSize: 19, fontWeight: 700, color: tileColor(t.color) }}>{t.val ?? "—"}</div>
@@ -1045,13 +1030,13 @@ export default function App() {
                 )}
               </div>
             ))}
-            <div style={{ flex: "1.4 1 200px", background: COLORS.panel, border: `2px solid ${macro.temp.color}`, borderRadius: 14, padding: "10px 14px" }}>
+            <div style={{ flex: "1.4 1 200px", background: COLORS.panel, border: `2px solid ${macro.temp.color}`, borderRadius: 10, padding: "10px 14px" }}>
               <div style={{ fontSize: 11, color: COLORS.dim }}>MARKET TEMPERATURE</div>
               <div style={{ fontSize: 22, fontWeight: 800, color: macro.temp.color }}>{macro.temp.label}</div>
               <div style={{ fontSize: 11 }}>{macro.temp.advice}</div>
             </div>
           </div>
-          {data.marketRead && <div style={{ marginTop: 10, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 14px", fontSize: 12, lineHeight: 1.55 }}>🌍 <b>The backdrop:</b> {data.marketRead}</div>}
+          {data.marketRead && <div style={{ marginTop: 10, background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, lineHeight: 1.55 }}>🌍 <b>The backdrop:</b> {data.marketRead}</div>}
           <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.dim, letterSpacing: 1 }}>THIS WEEK — GENERAL MARKET</div>
             {data.headlinesDate && <span style={{ fontSize: 10, color: COLORS.dim }}>updated {data.headlinesDate}</span>}
@@ -1061,11 +1046,11 @@ export default function App() {
           <div style={{ marginTop: 20 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
               <Eyebrow style={{ marginBottom: 0 }}>Sector pulse</Eyebrow>
-              <button onClick={() => setSectorEdit(!sectorEdit)} style={{ background: "transparent", color: sectorEdit ? COLORS.gold : COLORS.dim, border: `1px solid ${sectorEdit ? COLORS.gold : COLORS.border}`, borderRadius: 9, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>{sectorEdit ? "done" : "✎ edit"}</button>
+              <button onClick={() => setSectorEdit(!sectorEdit)} style={{ background: "transparent", color: sectorEdit ? COLORS.gold : COLORS.dim, border: `1px solid ${sectorEdit ? COLORS.gold : COLORS.border}`, borderRadius: 8, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>{sectorEdit ? "done" : "edit"}</button>
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               {data.sectors.map(s => (
-                <div key={s.name} style={{ flex: "1 1 150px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "8px 12px", position: "relative" }}>
+                <div key={s.name} style={{ flex: "1 1 150px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 12px", position: "relative" }}>
                   {sectorEdit
                     ? <button onClick={() => removeSector(s.name)} title="Remove sector" style={{ position: "absolute", top: 6, right: 8, background: "transparent", color: COLORS.red, border: "none", cursor: "pointer", fontSize: 13 }}>✕</button>
                     : <a href={etfLink(s.etf)} target="_blank" rel="noopener noreferrer" title="Open ETF chart" style={{ position: "absolute", top: 6, right: 8, color: COLORS.dim, textDecoration: "none", fontSize: 12 }}>↗</a>}
@@ -1075,10 +1060,10 @@ export default function App() {
                 </div>
               ))}
               {sectorEdit && (
-                <div style={{ flex: "1 1 200px", background: COLORS.bg, border: `1px dashed ${COLORS.border}`, borderRadius: 14, padding: "8px 12px", display: "grid", gap: 6 }}>
+                <div style={{ flex: "1 1 200px", background: COLORS.bg, border: `1px dashed ${COLORS.border}`, borderRadius: 10, padding: "8px 12px", display: "grid", gap: 6 }}>
                   <input id="newSectorName" placeholder="Sector name" style={{ ...inp, marginTop: 0, fontSize: 12, padding: 5 }} />
                   <input id="newSectorEtf" placeholder="ETF proxy (e.g. URA)" style={{ ...inp, marginTop: 0, fontSize: 12, padding: 5, textTransform: "uppercase" }} />
-                  <button onClick={() => { const n = document.getElementById("newSectorName"), e = document.getElementById("newSectorEtf"); addSector(n.value, e.value); n.value = ""; e.value = ""; }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 9, padding: "5px 0", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>＋ Add sector</button>
+                  <button onClick={() => { const n = document.getElementById("newSectorName"), e = document.getElementById("newSectorEtf"); addSector(n.value, e.value); n.value = ""; e.value = ""; }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "5px 0", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Add sector</button>
                 </div>
               )}
             </div>
@@ -1087,7 +1072,7 @@ export default function App() {
 
           <div style={{ marginTop: 20 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 8 }}>NEEDS ATTENTION</div>
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "hidden" }}>
+            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
               {attention.length === 0 ? <div style={{ padding: 18, textAlign: "center", color: COLORS.green, fontWeight: 600 }}>✨ Nothing urgent. All positions stable.</div>
                 : attention.map((a, i) => (
                   <div key={i} onClick={() => openDesk(a.ticker)} style={{ display: "flex", gap: 10, padding: "10px 14px", borderBottom: i < attention.length - 1 ? `1px solid ${COLORS.border}` : "none", cursor: "pointer", alignItems: "center" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
@@ -1099,7 +1084,7 @@ export default function App() {
 
           <div style={{ marginTop: 20 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 8 }}>THE BOARD — ranked by score · tap to open analysis</div>
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "auto" }}>
+            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "auto" }}>
               <div style={{ minWidth: 720 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 65px 75px 60px 85px 85px 95px", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
                   <span>TICKER</span><span>NAME</span><span>SCORE</span><span>Δ WEEK</span><span>SIGNAL</span><span>CATALYST</span><span>PRICE Δ</span><span>DECISION</span>
@@ -1116,7 +1101,7 @@ export default function App() {
                       <span style={{ width: 12, height: 12, borderRadius: "50%", background: sigColor(s.calc.sigLevel), boxShadow: glow(sigColor(s.calc.sigLevel), 10), display: "inline-block" }} />
                       <span style={{ fontSize: 12, color: s.calc.daysToCatalyst != null && s.calc.daysToCatalyst <= 7 ? COLORS.yellow : COLORS.dim }}>{s.calc.daysToCatalyst != null ? `${s.calc.daysToCatalyst}d` : "—"}</span>
                       <Delta v={pxDelta} suffix="%" />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: decColor(s.calc.decision) }}>{s.calc.decision === "DISQUALIFIED" ? "❌ DQ" : s.calc.decision === "GO" ? "✅ GO" : s.calc.decision === "WATCH" ? "👁 WATCH" : "❌ NO-GO"}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: decColor(s.calc.decision) }}>{s.calc.decision === "DISQUALIFIED" ? "DQ" : s.calc.decision === "GO" ? "✅ GO" : s.calc.decision === "WATCH" ? "👁 WATCH" : "❌ NO-GO"}</span>
                     </div>
                   );
                 })}
@@ -1159,12 +1144,12 @@ export default function App() {
               <Btn icon={ClipboardPaste} accent={COLORS.blue} onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste portfolio</Btn>
             </PageHeader>
 
-            {!pf && <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 18, color: COLORS.dim, fontSize: 13, marginBottom: 14 }}>No portfolio imported yet. Hit <b>Portfolio brief</b>, paste it into Claude with a screenshot of your broker holdings, and paste the block back. The book reconciles itself and the flags below light up.</div>}
+            {!pf && <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, color: COLORS.dim, fontSize: 13, marginBottom: 14 }}>No portfolio imported yet. Hit <b>Portfolio brief</b>, paste it into Claude with a screenshot of your broker holdings, and paste the block back. The book reconciles itself and the flags below light up.</div>}
 
             {pf && (
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
                 {[["Market value", `$${Math.round(totVal).toLocaleString()}`, COLORS.text], ["Unrealized P&L", `${totPL >= 0 ? "+" : "-"}$${Math.round(Math.abs(totPL)).toLocaleString()}`, totPL >= 0 ? COLORS.green : COLORS.red], ["Holdings", pf.positions.length, COLORS.text], ...(pf.cash != null ? [["Cash", `$${Math.round(pf.cash).toLocaleString()}`, COLORS.text]] : [])].map(([lbl, val, col], i) => (
-                  <div key={i} style={{ flex: "1 1 140px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 14px" }}>
+                  <div key={i} style={{ flex: "1 1 140px", background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 14px" }}>
                     <div style={{ fontSize: 10, color: COLORS.dim }}>{lbl}</div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: col }}>{val}</div>
                   </div>
@@ -1173,7 +1158,7 @@ export default function App() {
             )}
 
             {flags.length > 0 && (
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 14, marginBottom: 14 }}>
                 <Eyebrow style={{ marginBottom: 8 }}>Reconciliation — portfolio vs board</Eyebrow>
                 {flags.map((f, i) => (
                   <div key={i} onClick={() => boardByTicker[f.t] && openDesk(f.t)} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "5px 0", fontSize: 12, lineHeight: 1.45, cursor: boardByTicker[f.t] ? "pointer" : "default" }}>
@@ -1185,10 +1170,10 @@ export default function App() {
               </div>
             )}
 
-            {pf?.read && <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 14px", fontSize: 12, lineHeight: 1.55, marginBottom: 14 }}>🧭 <b>Claude's read:</b> {pf.read}</div>}
+            {pf?.read && <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 12, lineHeight: 1.55, marginBottom: 14 }}>🧭 <b>Claude's read:</b> {pf.read}</div>}
 
             {pf && (
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "auto", marginBottom: 14 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "auto", marginBottom: 14 }}>
                 <div style={{ minWidth: 780 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 60px 70px 80px 100px 90px 70px 90px", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
                     <span>TICKER</span><span>NAME</span><span>KIND</span><span>QTY</span><span>AVG</span><span>MKT VALUE</span><span>UNRLZD P&L</span><span>SCORE</span><span>VERDICT</span>
@@ -1217,7 +1202,7 @@ export default function App() {
             {(data.closed || []).length > 0 && (
               <div style={{ marginTop: 8 }}>
                 <Eyebrow>Closed — booked results</Eyebrow>
-                <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 14, overflow: "auto" }}>
+                <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "auto" }}>
                   <div style={{ minWidth: 700 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 80px 80px 80px 90px 90px 1fr", gap: 8, padding: "8px 14px", fontSize: 10, color: COLORS.dim, fontWeight: 700, borderBottom: `1px solid ${COLORS.border}` }}>
                       <span>TICKER</span><span>NAME</span><span>ENTRY</span><span>EXIT</span><span>RESULT</span><span>HELD FROM</span><span>CLOSED</span><span>REASON</span>
@@ -1247,26 +1232,30 @@ export default function App() {
               <PageHeader title="Trading desk" sub="Positions and watchlist — tap a card to open the analysis">
                 <Btn icon={ClipboardPaste} accent={COLORS.blue} title="Paste a full_scan JSON to add or refresh a stock" onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste full scan</Btn>
               </PageHeader>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(310px, 1fr))", gap: 14 }}>
-                {sorted.map(s => {
+              <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
+                {sorted.map((s, i) => {
                   const delta = s.prevScore != null ? s.calc.composite - s.prevScore : null;
                   const pxE = s.held && s.entryPrice ? (s.price - s.entryPrice) / s.entryPrice * 100 : null;
+                  const vc = s.claudeScan?.verdict?.call;
+                  const vCol = vc === "ADD" ? COLORS.green : vc === "EXIT" ? COLORS.red : vc === "TRIM" || vc === "RIDE_HYPE" ? COLORS.yellow : COLORS.dim;
                   return (
-                    <div key={s.ticker} className="hcard" onClick={() => openDesk(s.ticker)} style={{ background: COLORS.panel, border: `1px solid ${s.calc.sigLevel === "RED" ? COLORS.red : COLORS.border}`, boxShadow: s.calc.sigLevel === "RED" ? glow(COLORS.red, 14) : "none", borderRadius: 18, padding: 16, cursor: "pointer" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <ScoreRing score={s.calc.composite} decision={s.calc.decision} />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 800, fontSize: 16 }}>{s.ticker} {s.held && s.entryPrice != null && <span style={{ color: COLORS.gold, fontSize: 11 }}>HELD</span>}</div>
-                          <div style={{ fontSize: 11, color: COLORS.dim }}>{s.name}</div>
-                          <div style={{ marginTop: 4 }}><Delta v={delta} /> <span style={{ fontSize: 10, color: COLORS.dim }}>vs last wk</span></div>
+                    <div key={s.ticker} className="hcard" onClick={() => openDesk(s.ticker)} style={{ display: "flex", alignItems: "center", gap: 16, padding: "15px 20px", cursor: "pointer", borderTop: i > 0 ? `1px solid ${COLORS.border}` : "none" }}>
+                      <span style={{ width: 8, height: 8, minWidth: 8, borderRadius: "50%", background: sigColor(s.calc.sigLevel) }} title={s.calc.sigLevel} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 600, fontSize: 15 }}>{s.ticker}</span>
+                          <span style={{ fontSize: 13, color: COLORS.dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                          {s.held && <span style={{ fontSize: 11, color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: "1px 9px" }}>held{pxE != null ? ` ${pxE >= 0 ? "+" : ""}${pxE.toFixed(0)}%` : ""}</span>}
+                          {vc && <span style={{ fontSize: 11, color: vCol, border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: "1px 9px" }}>{vc.split("_").join(" ").toLowerCase()}</span>}
                         </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 11, fontWeight: 800, color: sigColor(s.calc.sigLevel) }}>{s.calc.sigLevel === "CLEAR" ? "✓ CLEAR" : s.calc.sigLevel}</div>
-                          {(s.overrides || []).length > 0 && <div style={{ fontSize: 9, color: COLORS.yellow }}>{s.overrides.length} overridden</div>}
-                          <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 4 }}>{s.calc.daysToCatalyst != null ? `⏱ ${s.calc.daysToCatalyst}d` : "no catalyst"}</div>
-                          {pxE != null && <Delta v={pxE} suffix="% entry" />}
-                          {s.reviewedWeek && <div style={{ fontSize: 9, color: COLORS.green, marginTop: 2 }}>✓ reviewed {s.reviewedWeek.slice(5)}</div>}
+                        <div style={{ fontSize: 12.5, color: COLORS.dim, marginTop: 3 }}>
+                          {s.calc.daysToCatalyst != null ? `⏱ ${s.catalystType || "catalyst"} in ${s.calc.daysToCatalyst}d` : "no catalyst"}
+                          {(s.overrides || []).length > 0 ? ` · ${s.overrides.length} overridden` : ""}
                         </div>
+                      </div>
+                      <div style={{ textAlign: "right", minWidth: 72 }}>
+                        <div style={{ fontSize: 17, fontWeight: 600, color: decColor(s.calc.decision), letterSpacing: "-0.02em" }}>{s.calc.composite.toFixed(1)}</div>
+                        <div style={{ fontSize: 11.5, color: COLORS.dim, marginTop: 1 }}><Delta v={delta} /></div>
                       </div>
                     </div>
                   );
@@ -1276,15 +1265,15 @@ export default function App() {
           ) : selCluster == null && !histDate ? (
             <>
               <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-                <button onClick={() => setSelStock(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← All positions</button>
+                <Btn icon={ArrowLeft} onClick={() => setSelStock(null)}>All positions</Btn>
                 <span style={{ fontSize: 12, color: COLORS.dim }}>Tap any cluster bar to go deeper → evidence</span>
                 <div style={{ flex: 1 }} />
-                <button onClick={() => { setBriefModal({ ticker: sel.ticker, mode: "update" }); setCopyMsg(""); }} style={{ background: COLORS.panelLight, color: COLORS.gold, border: `1px solid ${COLORS.gold}`, borderRadius: 10, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>📤 Update brief</button>
-                <button onClick={() => { setBriefModal({ ticker: sel.ticker, mode: "discuss" }); setCopyMsg(""); }} style={{ background: COLORS.panelLight, color: COLORS.green, border: `1px solid ${COLORS.green}`, borderRadius: 10, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>💬 Discuss brief</button>
-                <button onClick={() => { setSyncModal(true); setSyncError(""); }} style={{ background: COLORS.panelLight, color: COLORS.blue, border: `1px solid ${COLORS.blue}`, borderRadius: 10, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>📥 Paste result</button>
+                <Btn icon={Upload} accent={COLORS.gold} onClick={() => { setBriefModal({ ticker: sel.ticker, mode: "update" }); setCopyMsg(""); }}>Update brief</Btn>
+                <Btn icon={MessageSquare} accent={COLORS.green} onClick={() => { setBriefModal({ ticker: sel.ticker, mode: "discuss" }); setCopyMsg(""); }}>Discuss brief</Btn>
+                <Btn icon={ClipboardPaste} accent={COLORS.blue} onClick={() => { setSyncModal(true); setSyncError(""); }}>Paste result</Btn>
               </div>
 
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 22, marginBottom: 14 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 22, marginBottom: 14 }}>
                 <div style={{ display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
                   <ScoreRing score={sel.calc.composite} size={86} decision={sel.calc.decision} />
                   <div style={{ flex: 1, minWidth: 200 }}>
@@ -1297,7 +1286,7 @@ export default function App() {
                     </div>
                     {sel.lastFetch && <div style={{ marginTop: 6, fontSize: 11, color: COLORS.dim }}>Data as of {sel.lastFetch.date}{sel.lastFetch.currency ? ` · ${sel.lastFetch.currency}` : ""}{sel.lastFetch.missing?.length ? ` · missing: ${sel.lastFetch.missing.join(", ")}` : " · all fields"}{sel.lastFetch.notes ? ` · ${sel.lastFetch.notes}` : ""}</div>}
                   </div>
-                  <div style={{ textAlign: "center", padding: "12px 22px", borderRadius: 16, background: COLORS.bg, border: `2px solid ${sigColor(sel.calc.sigLevel)}` }}>
+                  <div style={{ textAlign: "center", padding: "12px 22px", borderRadius: 12, background: COLORS.bg, border: `2px solid ${sigColor(sel.calc.sigLevel)}` }}>
                     <div style={{ fontSize: 10, color: COLORS.dim, letterSpacing: 1 }}>SIGNAL STATUS</div>
                     <div style={{ fontSize: 22, fontWeight: 800, color: sigColor(sel.calc.sigLevel) }}>{sel.calc.sigLevel}</div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: decColor(sel.calc.decision), marginTop: 2 }}>{sel.calc.decision}</div>
@@ -1312,7 +1301,7 @@ export default function App() {
                         <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", padding: "5px 0", fontSize: 13, opacity: overridden ? 0.55 : 1, flexWrap: "wrap" }}>
                           <span style={{ color: sig.level === "RED" ? COLORS.red : sig.level === "STALE" ? COLORS.blue : COLORS.yellow, fontWeight: 700, minWidth: 52, fontSize: 11 }}>{sig.level}</span>
                           <span>{sig.text}</span><span style={{ fontSize: 11, color: COLORS.dim }}>({sig.rule})</span>
-                          {overridden ? <span style={{ marginLeft: "auto", fontSize: 11, color: COLORS.yellow }}>✓ overridden</span> : <button onClick={() => logOverride(sel.ticker, sig.text)} style={{ marginLeft: "auto", background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 9, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>Override</button>}
+                          {overridden ? <span style={{ marginLeft: "auto", fontSize: 11, color: COLORS.yellow }}>✓ overridden</span> : <button onClick={() => logOverride(sel.ticker, sig.text)} style={{ marginLeft: "auto", background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 8, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>Override</button>}
                         </div>
                       );
                     })}
@@ -1327,11 +1316,11 @@ export default function App() {
                 const vCol = vc === "ADD" ? COLORS.green : vc === "EXIT" ? COLORS.red : vc === "TRIM" ? COLORS.yellow : vc === "RIDE_HYPE" ? COLORS.gold : COLORS.blue;
                 const drift = cs.composite != null && Math.abs(cs.composite - sel.calc.composite) > 0.3;
                 return (
-                  <div style={{ background: COLORS.panel, border: `1px solid ${vc ? vCol : COLORS.border}`, borderRadius: 18, padding: 18, marginBottom: 14 }}>
+                  <div style={{ background: COLORS.panel, border: `1px solid ${vc ? vCol : COLORS.border}`, borderRadius: 12, padding: 18, marginBottom: 14 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                       <div style={{ fontWeight: 800, fontSize: 14 }}>🧭 Claude's read</div>
                       <span style={{ fontSize: 11, color: COLORS.dim }}>scanned {cs.date}{cs.band ? ` · ${cs.band}` : ""}</span>
-                      <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 800, color: vCol, padding: "4px 14px", borderRadius: 999, border: `1px solid ${vCol}`, background: `${vCol}18`, boxShadow: glow(vCol) }}>{vc ? vc.split("_").join(" ") : "no verdict"}</span>
+                      <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 800, color: vCol, padding: "4px 14px", borderRadius: 899, border: `1px solid ${vCol}`, background: `${vCol}18`, boxShadow: glow(vCol) }}>{vc ? vc.split("_").join(" ") : "no verdict"}</span>
                     </div>
                     {cs.verdict?.horizon && <div style={{ fontSize: 12, color: COLORS.gold, marginTop: 8 }}>⏳ {cs.verdict.horizon}</div>}
                     {cs.verdict?.rationale && <div style={{ fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>{cs.verdict.rationale}</div>}
@@ -1347,8 +1336,8 @@ export default function App() {
                         ))}
                       </div>
                     )}
-                    {cs.bearCase && <div style={{ fontSize: 12, color: COLORS.red, marginTop: 8, lineHeight: 1.5 }}>🐻 {cs.bearCase}</div>}
-                    {cs.vetoes?.tripped?.length > 0 && <div style={{ fontSize: 12, color: COLORS.red, marginTop: 8 }}>⛔ Veto tripped: {cs.vetoes.tripped.join(" · ")}</div>}
+                    {cs.bearCase && <div style={{ fontSize: 12, color: COLORS.red, marginTop: 8, lineHeight: 1.5 }}>🐻 Bear case: {cs.bearCase}</div>}
+                    {cs.vetoes?.tripped?.length > 0 && <div style={{ fontSize: 12, color: COLORS.red, marginTop: 8, fontWeight: 700 }}>⛔ Veto tripped: {cs.vetoes.tripped.join(" · ")}</div>}
                     {cs.vetoes?.detail && <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 6 }}>{cs.vetoes.detail}</div>}
                     {drift && <div style={{ fontSize: 11, color: COLORS.yellow, marginTop: 8 }}>⚠️ Board composite {sel.calc.composite.toFixed(1)} differs from the scan's {cs.composite.toFixed(1)} — that's your overrides, qual edits, or weight changes since the scan, not an error.</div>}
                   </div>
@@ -1358,7 +1347,7 @@ export default function App() {
               {QUESTIONS.map(q => {
                 const ks = Object.keys(CLUSTER_NAMES).filter(k => QUESTION_OF[k] === q);
                 return (
-                  <div key={q} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: "14px 18px", marginBottom: 10 }}>
+                  <div key={q} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "14px 18px", marginBottom: 10 }}>
                     <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{q}</div>
                     {ks.map(k => {
                       const v = sel.calc.scores[k], prev = sel.prevScores?.[k];
@@ -1380,7 +1369,7 @@ export default function App() {
               })}
 
               {/* VERDICT */}
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 4 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18, marginTop: 4 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 800, fontSize: 14 }}>Verdict</div>
                   {sel.reviewedWeek ? <span style={{ fontSize: 11, color: COLORS.green }}>✓ Reviewed {sel.reviewedWeek}</span> : <span style={{ fontSize: 11, color: COLORS.yellow }}>not yet reviewed this week</span>}
@@ -1391,7 +1380,7 @@ export default function App() {
                     const disabled = (a === "Trim" || a === "Exit" || a === "Hold") && !(sel.held && sel.entryPrice != null);
                     return (
                       <button key={a} disabled={disabled} onClick={() => doVerdict(sel.ticker, a)} title={disabled ? "No open position — use Add first" : ""}
-                        style={{ flex: 1, minWidth: 80, background: disabled ? COLORS.bg : a === "Exit" ? COLORS.red : a === "Add" ? COLORS.green : COLORS.panelLight, color: disabled ? COLORS.dim : a === "Hold" || a === "Trim" ? COLORS.text : "#fff", border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "10px 0", cursor: disabled ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 14, opacity: disabled ? 0.5 : 1 }}>{a}</button>
+                        style={{ flex: 1, minWidth: 80, background: disabled ? COLORS.bg : a === "Exit" ? COLORS.red : a === "Add" ? COLORS.green : COLORS.panelLight, color: disabled ? COLORS.dim : a === "Hold" || a === "Trim" ? COLORS.text : "#fff", border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 0", cursor: disabled ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 14, opacity: disabled ? 0.5 : 1 }}>{a}</button>
                     );
                   })}
                 </div>
@@ -1399,8 +1388,8 @@ export default function App() {
               </div>
 
               {/* NOTEBOOK */}
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 14 }}>
-                <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>📓 Position notebook</div>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18, marginTop: 14 }}>
+                <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>Position notebook</div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                   <input id="newNote" placeholder="Add a note…" style={{ ...inp, marginTop: 0 }} onKeyDown={e => { if (e.key === "Enter") { addNote(sel.ticker, e.target.value); e.target.value = ""; } }} />
                   <button onClick={() => { const el = document.getElementById("newNote"); addNote(sel.ticker, el.value); el.value = ""; }} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", fontWeight: 700 }}>Add</button>
@@ -1411,7 +1400,7 @@ export default function App() {
               </div>
 
               {/* HISTORY TIMELINE */}
-              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 14 }}>
+              <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18, marginTop: 14 }}>
                 <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ fontWeight: 800, fontSize: 14 }}>🕓 Weekly history</div>
                   <span style={{ fontSize: 11, color: COLORS.dim, marginLeft: 10 }}>frozen each snapshot — tap a week to see its full state</span>
@@ -1419,7 +1408,7 @@ export default function App() {
                 {(data.snapshots?.[sel.ticker] || []).length === 0 ? <div style={{ fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>No snapshots yet. One gets frozen automatically every time you paste an update scan.</div> : (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {(data.snapshots[sel.ticker] || []).slice().reverse().map((snap, i) => (
-                      <button key={i} onClick={() => setHistDate(snap.date)} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "8px 12px", cursor: "pointer", textAlign: "left", color: COLORS.text }}>
+                      <button key={i} onClick={() => setHistDate(snap.date)} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "8px 12px", cursor: "pointer", textAlign: "left", color: COLORS.text }}>
                         <div style={{ fontSize: 11, color: COLORS.dim }}>{snap.date}</div>
                         <div style={{ fontSize: 16, fontWeight: 800, color: decColor(snap.decision) }}>{snap.composite?.toFixed?.(1) ?? snap.composite}</div>
                         <div style={{ fontSize: 10, color: COLORS.dim }}>${snap.price} · {snap.decision}</div>
@@ -1449,7 +1438,7 @@ export default function App() {
                     <button onClick={() => setHistDate(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← {sel.ticker} current</button>
                     <span style={{ fontSize: 13, fontWeight: 700 }}>{sel.ticker} — frozen state on {snap.date}</span>
                   </div>
-                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 18, padding: 20 }}>
+                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.blue}`, borderRadius: 12, padding: 20 }}>
                     <div style={{ display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
                       <ScoreRing score={snap.composite} size={72} decision={snap.decision} />
                       <div>
@@ -1459,7 +1448,7 @@ export default function App() {
                         {snap.knockouts?.length > 0 && <div style={{ fontSize: 12, color: COLORS.red }}>⛔ {snap.knockouts.join(", ")}</div>}
                       </div>
                     </div>
-                    {snap.summary && <div style={{ fontSize: 12, marginBottom: 12, padding: "8px 10px", background: COLORS.bg, borderRadius: 10, border: `1px solid ${COLORS.border}`, lineHeight: 1.5 }}>📌 {snap.summary}</div>}
+                    {snap.summary && <div style={{ fontSize: 12, marginBottom: 12, padding: "8px 10px", background: COLORS.bg, borderRadius: 10, border: `1px solid ${COLORS.border}`, lineHeight: 1.5 }}>{snap.summary}</div>}
                     {snap.fields && (
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
                         {[["Price", snap.fields.price, "$"], ["Mkt Cap", snap.fields.mktCap, "$", "M"], ["Debt", snap.fields.debt, "$", "M"], ["Cash", snap.fields.cash, "$", "M"], ["Burn/qtr", snap.fields.burnQ, "$", "M"], ["Volume", snap.fields.volume, "", ""], ["Insider net", snap.fields.insiderNet, "", " sh"]].map(([lbl, val, pre, suf], fi) => (
@@ -1498,7 +1487,7 @@ export default function App() {
                     <button onClick={() => setSelCluster(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>← {sel.ticker} analysis</button>
                     <span style={{ fontSize: 13, fontWeight: 700 }}>{sel.ticker} · {k} — {CLUSTER_NAMES[k]} · Evidence Room</span>
                   </div>
-                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.gold}`, borderRadius: 18, padding: 20 }}>
+                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.gold}`, borderRadius: 12, padding: 20 }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4, flexWrap: "wrap" }}>
                       <div style={{ fontSize: 28, fontWeight: 800, color: scoreColor(v) }}>{typeof v === "number" ? v.toFixed(1) : v == null ? "unscored" : "KNOCKOUT"}</div>
                       <div style={{ fontSize: 12, color: COLORS.dim }}>weight ×{(rules.weights[k] * 100).toFixed(0)}% → contributes <b style={{ color: COLORS.text }}>{typeof v === "number" ? (v * rules.weights[k]).toFixed(2) : "0"}</b> to composite {sel.calc.composite.toFixed(1)}</div>
@@ -1517,9 +1506,9 @@ export default function App() {
                       const cd = sel.claudeScan.clusters[k];
                       if (!cd.facts.length && !cd.reasoning && !cd.watch.length) return null;
                       return (
-                        <div style={{ marginBottom: 14, background: COLORS.bg, border: `1px solid ${COLORS.blue}`, borderRadius: 14, padding: 14 }}>
+                        <div style={{ marginBottom: 14, background: COLORS.bg, border: `1px solid ${COLORS.blue}`, borderRadius: 10, padding: 14 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
-                            <span style={{ fontWeight: 800, fontSize: 12, color: COLORS.blue }}>🧭 CLAUDE'S DOSSIER</span>
+                            <span style={{ fontWeight: 800, fontSize: 12, color: COLORS.blue }}>🧭 Claude's dossier</span>
                             <span style={{ fontSize: 11, color: COLORS.dim }}>scanned {sel.claudeScan.date}</span>
                             {cd.score != null && <span style={{ marginLeft: "auto", fontSize: 12, color: COLORS.dim }}>Claude scored <b style={{ color: scoreColor(cd.score) }}>{cd.score.toFixed(1)}</b></span>}
                           </div>
@@ -1551,12 +1540,12 @@ export default function App() {
                         {t.components.map((c, i) => {
                           const isEd = editComp && editComp.cluster === k && editComp.idx === i;
                           return (
-                            <div key={i} style={{ background: COLORS.bg, border: `1px solid ${isEd ? COLORS.gold : COLORS.border}`, borderRadius: 14, padding: 12 }}>
+                            <div key={i} style={{ background: COLORS.bg, border: `1px solid ${isEd ? COLORS.gold : COLORS.border}`, borderRadius: 10, padding: 12 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                                 <span style={{ fontWeight: 700, fontSize: 13, minWidth: 120 }}>{c.name}</span>
                                 <span style={{ fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: c.input === "High" ? "rgba(61,204,126,0.15)" : c.input === "Medium" ? "rgba(224,181,84,0.15)" : c.input === "Low" ? "rgba(232,92,92,0.15)" : COLORS.panel, color: c.input === "High" ? COLORS.green : c.input === "Medium" ? COLORS.yellow : c.input === "Low" ? COLORS.red : COLORS.dim }}>{c.input}</span>
                                 <span style={{ fontSize: 11, color: COLORS.dim }}>{c.score !== "—" ? `→ ${c.score}` : "unscored"}</span>
-                                <button onClick={() => setEditComp(isEd ? null : { cluster: k, idx: i })} style={{ marginLeft: "auto", background: "transparent", color: COLORS.gold, border: `1px solid ${COLORS.gold}`, borderRadius: 9, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>{isEd ? "close" : "edit"}</button>
+                                <button onClick={() => setEditComp(isEd ? null : { cluster: k, idx: i })} style={{ marginLeft: "auto", background: "transparent", color: COLORS.gold, border: `1px solid ${COLORS.gold}`, borderRadius: 8, padding: "2px 10px", cursor: "pointer", fontSize: 11 }}>{isEd ? "close" : "edit"}</button>
                               </div>
                               {c.rationale ? <div style={{ fontSize: 12, color: COLORS.text, marginTop: 8, lineHeight: 1.5 }}>{c.rationale}</div> : <div style={{ fontSize: 12, color: COLORS.dim, marginTop: 8, fontStyle: "italic" }}>No reasoning yet — use "Discuss with Claude" to draft one, or edit directly.</div>}
                               {c.sources?.length > 0 && <div style={{ fontSize: 11, color: COLORS.blue, marginTop: 6 }}>📎 {c.sources.join(" · ")}</div>}
@@ -1564,12 +1553,12 @@ export default function App() {
                                 <div style={{ marginTop: 10, borderTop: `1px solid ${COLORS.border}`, paddingTop: 10, display: "grid", gap: 8 }}>
                                   <div style={{ display: "flex", gap: 6 }}>
                                     {[1, 2, 3].map(sv => (
-                                      <button key={sv} onClick={() => setQualComponent(sel.ticker, k, i, sv, undefined, undefined)} style={{ flex: 1, background: c.input === ["", "Low", "Medium", "High"][sv] ? COLORS.gold : COLORS.panel, color: c.input === ["", "Low", "Medium", "High"][sv] ? "#1B2A4A" : COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "6px 0", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>{["", "Low", "Medium", "High"][sv]}</button>
+                                      <button key={sv} onClick={() => setQualComponent(sel.ticker, k, i, sv, undefined, undefined)} style={{ flex: 1, background: c.input === ["", "Low", "Medium", "High"][sv] ? COLORS.gold : COLORS.panel, color: c.input === ["", "Low", "Medium", "High"][sv] ? "#1B2A4A" : COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "6px 0", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>{["", "Low", "Medium", "High"][sv]}</button>
                                     ))}
                                   </div>
                                   <textarea defaultValue={c.rationale} placeholder="Your reasoning…" id={`rat-${k}-${i}`} style={{ ...inp, height: 60, fontSize: 12 }} />
                                   <input defaultValue={(c.sources || []).join(", ")} placeholder="Sources (comma-separated)" id={`src-${k}-${i}`} style={{ ...inp, color: COLORS.blue, fontSize: 12 }} />
-                                  <button onClick={() => setQualComponent(sel.ticker, k, i, null, document.getElementById(`rat-${k}-${i}`).value, document.getElementById(`src-${k}-${i}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 9, padding: "7px 0", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save reasoning & sources</button>
+                                  <button onClick={() => setQualComponent(sel.ticker, k, i, null, document.getElementById(`rat-${k}-${i}`).value, document.getElementById(`src-${k}-${i}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "7px 0", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save reasoning & sources</button>
                                 </div>
                               )}
                             </div>
@@ -1584,7 +1573,7 @@ export default function App() {
                       )
                     )}
 
-                    {t.note && <div style={{ marginTop: 10, fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>📝 Summary note: {t.note}</div>}
+                    {t.note && <div style={{ marginTop: 10, fontSize: 12, color: COLORS.dim, fontStyle: "italic" }}>Summary note: {t.note}</div>}
                     {t.lastEarnings && <div style={{ marginTop: 4, fontSize: 11, color: COLORS.dim }}>Last earnings call analyzed: {t.lastEarnings}</div>}
                     {/* Cluster J: editable catalyst + lifecycle inputs (moved here from stock-inputs) */}
                     {k === "J" && (
@@ -1599,8 +1588,8 @@ export default function App() {
                       </div>
                     )}
                     {k === "C" && sel.calc.knockouts.length > 0 && (
-                      <div style={{ marginTop: 12, padding: 12, background: "rgba(232,92,92,0.1)", border: `1px solid ${COLORS.red}`, borderRadius: 14 }}>
-                        <div style={{ fontWeight: 800, color: COLORS.red, fontSize: 12, marginBottom: 4 }}>⛔ ACTIVE KNOCKOUTS</div>
+                      <div style={{ marginTop: 12, padding: 12, background: "rgba(232,92,92,0.1)", border: `1px solid ${COLORS.red}`, borderRadius: 10 }}>
+                        <div style={{ fontWeight: 800, color: COLORS.red, fontSize: 12, marginBottom: 4 }}>⛔ Active knockouts</div>
                         {sel.calc.knockouts.map((ko, i) => <div key={i} style={{ fontSize: 12 }}><b>{ko.name}</b> — {ko.rule}</div>)}
                       </div>
                     )}
@@ -1611,14 +1600,14 @@ export default function App() {
                           <span style={{ fontSize: 12, color: COLORS.dim }}>Override this cluster score:</span>
                           <input type="number" min="0" max="10" step="0.1" id={`ov-${k}`} defaultValue={typeof v === "number" ? v.toFixed(1) : ""} style={{ ...inp, width: 70, marginTop: 0 }} />
                           <input id={`ovr-${k}`} placeholder="reason for override" style={{ ...inp, flex: 1, minWidth: 160, marginTop: 0 }} />
-                          <button onClick={() => setClusterOverride(sel.ticker, k, document.getElementById(`ov-${k}`).value, document.getElementById(`ovr-${k}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 9, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save</button>
-                          <button onClick={() => setClusterOvEdit(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                          <button onClick={() => setClusterOverride(sel.ticker, k, document.getElementById(`ov-${k}`).value, document.getElementById(`ovr-${k}`).value)} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Save</button>
+                          <button onClick={() => setClusterOvEdit(null)} style={{ background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
                         </div>
-                      ) : <button onClick={() => setClusterOvEdit(k)} style={{ background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 9, padding: "5px 14px", cursor: "pointer", fontSize: 12 }}>✏️ Override {k} cluster score</button>}
+                      ) : <button onClick={() => setClusterOvEdit(k)} style={{ background: "transparent", color: COLORS.yellow, border: `1px solid ${COLORS.yellow}`, borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontSize: 12 }}>✏️ Override {k} cluster score</button>}
                     </div>
                   </div>
 
-                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginTop: 14 }}>
+                  <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18, marginTop: 14 }}>
                     <div style={{ fontWeight: 800, marginBottom: 10, fontSize: 13 }}>📜 {sel.ticker} — Decision & Override Trail</div>
                     {(sel.decisions || []).length === 0 && (sel.overrides || []).length === 0 && <div style={{ fontSize: 12, color: COLORS.dim }}>No decisions logged yet.</div>}
                     {(sel.overrides || []).map((o, i) => <div key={`o${i}`} style={{ fontSize: 12, padding: "6px 0", borderBottom: `1px solid ${COLORS.border}` }}><span style={{ color: COLORS.yellow, fontWeight: 700 }}>OVERRIDE</span> <span style={{ color: COLORS.dim }}>{o.date}</span> — "{o.signal}" — <i>{o.reason}</i></div>)}
@@ -1636,7 +1625,7 @@ export default function App() {
         <div className="room" style={{ padding: "26px 28px 48px", maxWidth: 720, margin: "0 auto" }}>
           <PageHeader title="Config" sub="Rules, calibration, and data safety" />
 
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginBottom: 14 }}>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18, marginBottom: 14 }}>
             <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>☁️ Cloud sync</div>
             <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12, lineHeight: 1.55 }}>One sync key, same data on every device — no more export/import between browsers. Set the same key you configured as SYNC_KEY in Vercel. Clear the field to go local-only. Status: <b style={{ color: syncStatus === "synced" ? COLORS.green : syncStatus === "error" || syncStatus === "badkey" ? COLORS.red : COLORS.text }}>{syncStatus === "off" ? "sync off" : syncStatus === "badkey" ? "wrong key (server rejected it)" : syncStatus}</b></div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -1646,21 +1635,21 @@ export default function App() {
             <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 10 }}>The key is stored only in this browser. Data syncs to your project's Vercel Blob store; the newest save wins across devices.</div>
           </div>
 
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18, marginBottom: 14 }}>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18, marginBottom: 14 }}>
             <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>💾 Backup & restore</div>
             <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12, lineHeight: 1.55 }}>Everything lives in this browser's local storage, and Safari purges local storage without asking. Export a backup after every scan session and keep it in Files or iCloud. Import replaces everything, so it asks first.</div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button onClick={exportAll} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>⬇ Export backup</button>
-              <button onClick={() => document.getElementById("importFileInput")?.click()} style={{ background: "transparent", color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>⬆ Import backup</button>
+              <button onClick={exportAll} style={{ background: COLORS.gold, color: "#1B2A4A", border: "none", borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>Export backup</button>
+              <button onClick={() => document.getElementById("importFileInput")?.click()} style={{ background: "transparent", color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "9px 18px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>Import backup</button>
               <input id="importFileInput" type="file" accept=".json,application/json" style={{ display: "none" }} onChange={e => { importAll(e.target.files && e.target.files[0]); e.target.value = ""; }} />
             </div>
             <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 10 }}>{data.stocks.length} stocks · {Object.values(data.snapshots || {}).reduce((a, v) => a + v.length, 0)} snapshots on board right now</div>
           </div>
 
-          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 18, padding: 18 }}>
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
               <div style={{ fontWeight: 800, fontSize: 14 }}>⚖️ Rules — weights, bands, vetoes</div>
-              <button onClick={resetRules} style={{ marginLeft: "auto", background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: "3px 12px", cursor: "pointer", fontSize: 11 }}>↩ Reset to defaults</button>
+              <button onClick={resetRules} style={{ marginLeft: "auto", background: "transparent", color: COLORS.dim, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "3px 12px", cursor: "pointer", fontSize: 11 }} >Reset to defaults</button>
             </div>
             <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12, lineHeight: 1.55 }}>Edits apply to the board instantly and ride into every brief as CONFIG, which beats the skill's own defaults — no skill re-upload needed. The deep rubric (tier tables, PICPOT anchors) lives in the skill itself; changing that is a deliberate SKILL.md edit, not a dial here.</div>
 
@@ -1692,7 +1681,6 @@ export default function App() {
           </div>
         </div>
       )}
-      </div>
       </div>
     </div>
   );
