@@ -6,7 +6,7 @@ const DEFAULT_RULES = {
   weights: { A: 0.05, B: 0.05, C: 0.20, D: 0.10, E: 0.10, F: 0.05, G: 0.10, H: 0.05, I: 0.10, J: 0.20 },
   mktCapFloor: 300, volHardVeto: 100000, volSoft: 500000,
   minAnalysts: 4, catalystWindow: 30, runwayMin: 2, runwayVeto: 0.5,
-  goThreshold: 7.5, watchThreshold: 5.0,
+  goThreshold: 3.8, watchThreshold: 2.5,
   macro: { capeRed: 30, vixBlackSwan: 50, vixElevated: 30, fgFear: 25, fgGreed: 75, buffettOver: 150, yieldRestrictive: 4.5 },
 };
 const CLUSTER_NAMES = {
@@ -35,7 +35,7 @@ const QUAL_LABELS = {
   I: ["Unscripted tone", "Q&A directness", "Guidance clarity", "Low evasiveness", "CEO conviction"],
 };
 
-const qualToScore = v => (v === 3 ? 9.5 : v === 2 ? 5 : v === 1 ? 1.5 : null);
+const qualToScore = v => (v === 3 ? 4.8 : v === 2 ? 2.5 : v === 1 ? 0.8 : null);
 // ─── SCORING ────────────────────────────────────────────────────────────────
 // The scoring brain lives in the Claude Skill — the app runs NO tier math and
 // NO veto logic of its own. Cluster scores come from the last scan (claudeScan);
@@ -46,14 +46,14 @@ function computeStock(s, rules) {
   const cs = s.claudeScan || null;
   const cScores = (cs && cs.clusters) || {};
 
-  // G/H/I: average of item anchors (Low=1.5, Med=5, High=9.5). Items arrive from
+  // G/H/I: average of item anchors (Low=0.8, Med=2.5, High=4.8). Items arrive from
   // the scan and stay editable in the Evidence Room, so these recompute live.
   const qual = (key, comps, labels) => {
     const rat = (s.qualRationale && s.qualRationale[key]) || {};
     const items = comps.map((v, i) => ({
       name: labels[i], input: v === 3 ? "High" : v === 2 ? "Medium" : v === 1 ? "Low" : "—",
       score: qualToScore(v) ?? "—", tier: v ? ["", "Low", "Medium", "High"][v] : "Unscored",
-      rule: v ? ["", "Low→1.5", "Medium→5", "High→9.5"][v] : "Not yet scored", weight: 1 / comps.length,
+      rule: v ? ["", "Low→0.8", "Medium→2.5", "High→4.8"][v] : "Not yet scored", weight: 1 / comps.length,
       rationale: rat[i]?.text || "", sources: rat[i]?.sources || [],
     }));
     const scored = comps.filter(v => v != null);
@@ -70,11 +70,27 @@ function computeStock(s, rules) {
   };
 
   const claudeScore = k => (typeof cScores[k]?.score === "number" ? cScores[k].score : null);
+  // Quant clusters: if the scan carried sub-items, the cluster score is live math over
+  // them (weighted avg + bonuses), with your per-item overrides applied first.
+  const itemOv = s.itemOv || {};
+  const quantScore = k => {
+    const items = cScores[k]?.items;
+    if (!Array.isArray(items) || !items.length || items.some(it => typeof it.score !== "number")) return claudeScore(k);
+    let wSum = 0, acc = 0, bonus = 0;
+    items.forEach(it => {
+      const ov = itemOv[k]?.[it.name];
+      const sc = typeof ov === "number" ? ov : it.score;
+      if (it.bonus) { bonus += sc; return; }
+      const w = typeof it.weight === "number" ? it.weight : 1;
+      acc += sc * w; wSum += w;
+    });
+    return wSum > 0 ? Math.min(5, acc / wSum + bonus) : claudeScore(k);
+  };
   const computedScores = {
-    A: claudeScore("A"), B: claudeScore("B"), C: claudeScore("C"), D: claudeScore("D"),
-    E: claudeScore("E"), F: claudeScore("F"),
+    A: quantScore("A"), B: quantScore("B"), C: quantScore("C"), D: quantScore("D"),
+    E: quantScore("E"), F: quantScore("F"),
     G: G.score ?? claudeScore("G"), H: H.score ?? claudeScore("H"), I: I.score ?? claudeScore("I"),
-    J: claudeScore("J"),
+    J: quantScore("J"),
   };
   const ov = s.overrideScores || {};
   const scores = {};
@@ -144,7 +160,7 @@ const SAMPLE = {
     { ticker: "SOUN", name: "SoundHound AI", entryPrice: 4.10, entryDate: "2026-03-15", exitPrice: 6.85, exitDate: "2026-05-02", gainPct: 67.1, reason: "Catalyst fired — earnings beat, took profit", finalScore: 7.4 },
   ],
   stocks: [
-    { ticker: "ATYR", name: "aTyr Pharma", sector: "Biotech", held: true, entryPrice: 3.20, entryDate: "2026-04-10", shares: 1000,
+    { ticker: "ATYR", name: "aTyr Pharma", sector: "Biotech", held: false, entryPrice: 3.20, entryDate: "2026-04-10", shares: 1000,
       price: 4.12, prevPrice: 3.85, prevScore: 7.1, prevScores: { A: 4.6, B: 6.1, C: 8.0, D: 7.0, E: 7.2, F: 5.0, G: 7.0, H: 5.5, I: 8.0, J: 7.4 },
       pb: 4.2, peerPB: 5.1, pe: null, indPE: null, mktCap: 380, volume: 1850000, debt: 0, cash: 92, burnQ: -11, sharesOut: 92,
       analysts: 6, target: 18, insiderNet: 42000, insiderBuyPrice: 3.45, low52: 1.21, ytd: -12,
@@ -159,7 +175,7 @@ const SAMPLE = {
       },
       overrideScores: {}, notebook: [{ date: "2026-06-01", text: "Phase 3 readout is the whole thesis. Everything else secondary until data drops." }],
       reviewedWeek: null, overrides: [], decisions: [{ date: "2026-06-01", action: "Hold", reason: "Catalyst approaching, thesis intact" }] },
-    { ticker: "QBTS", name: "D-Wave Quantum", sector: "Quantum", held: true, entryPrice: 2.10, entryDate: "2026-05-01", shares: 1500,
+    { ticker: "QBTS", name: "D-Wave Quantum", sector: "Quantum", held: false, entryPrice: 2.10, entryDate: "2026-05-01", shares: 1500,
       price: 1.74, prevPrice: 2.05, prevScore: 6.4, prevScores: { A: 3.5, B: 6.5, C: 5.2, D: 6.0, E: 3.0, F: 6.0, G: 7.3, H: 4.4, I: 5.0, J: 5.8 },
       pb: 8.1, peerPB: 6.2, pe: null, indPE: null, mktCap: 410, volume: 3200000, debt: 12, cash: 64, burnQ: -16, sharesOut: 180,
       analysts: 5, target: 3.5, insiderNet: -8000, insiderBuyPrice: null, low52: 1.52, ytd: -38,
@@ -234,7 +250,7 @@ function AnimNum({ v, decimals = 1, style, prefix = "", suffix = "" }) {
 const sigColor = l => (l === "RED" ? COLORS.red : l === "WATCH" ? COLORS.yellow : COLORS.green);
 const tileColor = c => (c === "red" ? COLORS.red : c === "yellow" ? COLORS.yellow : c === "green" ? COLORS.green : COLORS.dim);
 const decColor = d => (d === "GO" ? COLORS.green : d === "WATCH" ? COLORS.yellow : COLORS.red);
-const scoreColor = v => (typeof v !== "number" ? COLORS.red : v >= 7 ? COLORS.green : v >= 4 ? COLORS.yellow : COLORS.red);
+const scoreColor = v => (typeof v !== "number" ? COLORS.red : v >= 3.5 ? COLORS.green : v >= 2 ? COLORS.yellow : COLORS.red);
 
 function Delta({ v, suffix = "" }) {
   if (v == null) return <span style={{ color: COLORS.dim }}>—</span>;
@@ -273,7 +289,7 @@ function Eyebrow({ children, style }) {
 }
 
 function ScoreRing({ score, size = 52, decision }) {
-  const pct = score != null ? Math.min(score / 10, 1) : 0, r = size / 2 - 4, c = 2 * Math.PI * r;
+  const pct = score != null ? Math.min(score / 5, 1) : 0, r = size / 2 - 4, c = 2 * Math.PI * r;
   const col = decision ? decColor(decision) : COLORS.gold;
   return (
     <svg width={size} height={size}>
@@ -352,7 +368,7 @@ export default function App() {
     let local = null;
     try {
       const r = localStorage.getItem("screener-data-v3");
-      if (r) { local = JSON.parse(r); setData(local); }
+      if (r) { local = normalizeData(JSON.parse(r)); setData(local); }
     } catch (e) { console.error("load failed", e); }
     if (!syncKey) return;
     (async () => {
@@ -362,7 +378,7 @@ export default function App() {
         if (r.status === 404) { if (local) cloudPush(local, syncKey); setSyncStatus("synced"); return; }
         if (r.status === 401) { setSyncStatus("badkey"); return; }
         if (!r.ok) { setSyncStatus("error"); return; }
-        const cloud = await r.json();
+        const cloud = normalizeData(await r.json());
         if (cloud && (!local || (cloud.updatedAt || 0) >= (local.updatedAt || 0))) {
           setData(cloud);
           try { localStorage.setItem("screener-data-v3", JSON.stringify(cloud)); } catch {}
@@ -371,6 +387,34 @@ export default function App() {
       } catch { setSyncStatus("error"); }
     })();
   }, []);
+  // One-time /10 → /5 migration + sample-data cleanup. Runs on any data entering the app.
+  const normalizeData = useCallback(raw => {
+    if (!raw || raw.scaleV === 5) return raw;
+    const h = x => (typeof x === "number" ? Math.round(x / 2 * 100) / 100 : x);
+    const d = JSON.parse(JSON.stringify(raw));
+    (d.stocks || []).forEach(s => {
+      if (s.claudeScan) {
+        Object.values(s.claudeScan.clusters || {}).forEach(c => { if (c) { c.score = h(c.score); if (Array.isArray(c.items) && c.items.some(it => typeof it.weight === "number")) c.items.forEach(it => { it.score = h(it.score); }); } });
+        s.claudeScan.composite = h(s.claudeScan.composite);
+      }
+      s.prevScore = h(s.prevScore);
+      if (s.prevScores) Object.keys(s.prevScores).forEach(k => { s.prevScores[k] = h(s.prevScores[k]); });
+      if (s.overrideScores) Object.values(s.overrideScores).forEach(o => { if (o) o.value = h(o.value); });
+      // Broker truth: if a portfolio was imported, held = presence in it. Watchlist stays watchlist.
+      if (d.portfolio) s.held = (d.portfolio.positions || []).some(p => (p.kind || "stock") === "stock" && (p.ticker || "").toUpperCase() === s.ticker);
+    });
+    Object.values(d.snapshots || {}).forEach(arr => arr.forEach(sn => {
+      sn.composite = h(sn.composite);
+      ["scores", "computedScores"].forEach(f => { if (sn[f]) Object.keys(sn[f]).forEach(k => { sn[f][k] = h(sn[f][k]); }); });
+      if (sn.overrideScores) Object.values(sn.overrideScores).forEach(o => { if (o) o.value = h(o.value); });
+    }));
+    if (d.rules) { d.rules.goThreshold = h(d.rules.goThreshold); d.rules.watchThreshold = h(d.rules.watchThreshold); }
+    // Sample artifacts: demo closed trades never happened — drop anything closed before the app existed for real.
+    d.closed = (d.closed || []).filter(c => !(c.ticker === "SMCI" || (c.exitDate || "") < "2026-06-25"));
+    d.scaleV = 5;
+    return d;
+  }, []);
+
   const persist = useCallback(d => {
     const stamped = { ...d, updatedAt: Date.now() };
     setData(stamped);
@@ -499,6 +543,21 @@ export default function App() {
   // Builds the paste-into-Claude brief for UPDATE SCAN or DISCUSS. The brief IS
   // Claude's memory: prior scores, reasoning, watch items, verdict, overrides.
   // ─── EDITABLE RULES ─────────────────────────────────────────────────────
+  // Per-sub-component override: blank restores Claude's score. Cluster math recomputes live.
+  const setItemOverride = async (ticker, k, itemName, value) => {
+    const v = value === "" ? null : Math.max(0, Math.min(5, parseFloat(value)));
+    if (value !== "" && isNaN(v)) return;
+    const stocks = data.stocks.map(s => {
+      if (s.ticker !== ticker) return s;
+      const io = JSON.parse(JSON.stringify(s.itemOv || {}));
+      if (!io[k]) io[k] = {};
+      if (v == null) delete io[k][itemName]; else io[k][itemName] = v;
+      if (!Object.keys(io[k]).length) delete io[k];
+      return { ...s, itemOv: io };
+    });
+    await persist({ ...data, stocks });
+  };
+
   const setRule = async (key, value) => {
     const v = value === "" ? null : parseFloat(value);
     if (v == null || isNaN(v)) return;
@@ -526,9 +585,10 @@ export default function App() {
     const positions = (Array.isArray(obj.positions) ? obj.positions : []).filter(p => p && p.ticker);
     // Broker is ground truth for held stocks: shares + avg cost reconcile automatically.
     // Only kind:"stock" rows touch the book — options/ETFs display but don't set cost basis.
+    // Broker truth: presence in the import decides held. Absent = watchlist, no nagging.
     const stocks = d.stocks.map(s => {
       const m = positions.find(p => (p.ticker || "").toUpperCase() === s.ticker && (p.kind || "stock") === "stock");
-      if (!m) return s;
+      if (!m) return s.held ? { ...s, held: false } : s;
       return { ...s, held: true, shares: m.qty ?? s.shares, entryPrice: m.avgPrice ?? s.entryPrice, entryDate: s.entryDate || today };
     });
     return { stocks, portfolio: { date: today, cash: obj.cash ?? null, read: obj.read || "", positions } };
@@ -539,7 +599,6 @@ export default function App() {
     const L = [];
     L.push("MARKET UPDATE");
     L.push(`INCLUDE: ${(data.sectors || []).map(s => `${s.name}${s.etf ? ` (${s.etf})` : ""}`).join(", ") || "none"}`);
-    L.push(`TICKERS: ${data.stocks.map(s => s.ticker).join(", ") || "none"}`);
     return L.join("\n");
   };
   const MACRO_FIELD = { cape: "cape", vix: "vix", fg: "fearGreed", buffett: "buffett", yield: "yield10", margin: "marginDebt" };
@@ -904,6 +963,7 @@ export default function App() {
         const when = payload.exportDate ? new Date(payload.exportDate).toISOString().slice(0, 10) : "unknown date";
         const ok = window.confirm(`Restore backup from ${when}?\n\nThis REPLACES everything currently in the app (${data.stocks.length} stocks now vs ${d.stocks.length} in the backup). This cannot be undone.\n\nTip: export a backup of the current state first if unsure.`);
         if (!ok) { setFetchMsg("Import cancelled. Nothing changed."); return; }
+        Object.assign(d, normalizeData(d));
         await persist(d);
         setFetchMsg(`Backup from ${when} restored: ${d.stocks.length} stocks.`);
       } catch (e) {
@@ -1160,7 +1220,6 @@ export default function App() {
           else if (s.held && call === "HOLD_TO_CATALYST") flags.push({ lvl: "INFO", t: s.ticker, msg: `Holding for the catalyst — ${s.calc.daysToCatalyst != null ? `${s.calc.daysToCatalyst}d out` : "no date"}${hz ? ` (${hz})` : ""}` });
           if (!s.held && call === "ADD") flags.push({ lvl: "GREEN", t: s.ticker, msg: "Verdict says ADD — you're not holding" });
           if (s.held && !s.claudeScan) flags.push({ lvl: "YELLOW", t: s.ticker, msg: "Held but never screened — no vetoes, no scores" });
-          if (s.held && pf && !inImport) flags.push({ lvl: "YELLOW", t: s.ticker, msg: "Marked held here but absent from the last import — sold, or partial screenshot?" });
         });
         pfStocks.forEach(p => {
           const t = (p.ticker || "").toUpperCase();
@@ -1335,7 +1394,12 @@ export default function App() {
                   {sel.claudeScan?.verdict?.call && <span style={{ fontSize: 12.5, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: "4px 13px", fontWeight: 500 }}>{sel.claudeScan.verdict.call.split("_").join(" ").toLowerCase()}</span>}
                   {(sel.overrides || []).length > 0 && <span style={{ fontSize: 12, color: COLORS.yellow }}>{sel.overrides.length} overridden</span>}
                 </div>
-                <div style={{ fontSize: 14, color: COLORS.dim, marginTop: 8 }}>{sel.name}{sel.sector ? ` · ${sel.sector}` : ""}{sel.lastFetch ? ` · data as of ${sel.lastFetch.date}${sel.lastFetch.missing?.length ? ` · missing: ${sel.lastFetch.missing.join(", ")}` : ""}` : ""}</div>
+                <div style={{ fontSize: 14, color: COLORS.dim, marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                  <span>{sel.name}{sel.sector ? ` · ${sel.sector}` : ""}{sel.lastFetch ? ` · data as of ${sel.lastFetch.date}${sel.lastFetch.missing?.length ? ` · missing: ${sel.lastFetch.missing.join(", ")}` : ""}` : ""}</span>
+                  {[["Financials", `https://stockanalysis.com/stocks/${sel.ticker}/financials/`], ["SEC filings", `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${sel.ticker}&type=10&dateb=&owner=include&count=40`], ["Chart", `https://www.tradingview.com/chart/?symbol=${sel.ticker}`]].map(([lbl, url]) => (
+                    <a key={lbl} href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: COLORS.blue, textDecoration: "none" }}>{lbl} ↗</a>
+                  ))}
+                </div>
               </div>
 
               {/* STAT STRIP */}
@@ -1419,7 +1483,7 @@ export default function App() {
                       return (
                         <div key={k} onClick={() => setSelCluster(k)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 6px", borderRadius: 10, fontSize: 13, cursor: "pointer" }} onMouseEnter={e => (e.currentTarget.style.background = COLORS.panelLight)} onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
                           <span style={{ minWidth: 170, color: COLORS.dim }}>{k} — {CLUSTER_NAMES[k]} {hasOv && <span title="overridden" style={{ color: COLORS.yellow }}>✏️</span>}</span>
-                          <div style={{ flex: 1, height: 8, background: COLORS.bg, borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${(typeof v === "number" ? v : 0) * 10}%`, height: "100%", background: scoreColor(v), borderRadius: 4 }} /></div>
+                          <div style={{ flex: 1, height: 8, background: COLORS.bg, borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${(typeof v === "number" ? v : 0) * 20}%`, height: "100%", background: scoreColor(v), borderRadius: 4 }} /></div>
                           <span style={{ fontWeight: 700, minWidth: 38, textAlign: "right", color: scoreColor(v) }}>{typeof v === "number" ? v.toFixed(1) : v == null ? "—" : "KO"}</span>
                           <span style={{ minWidth: 64, textAlign: "right" }}><Delta v={d} /></span>
                           <span style={{ fontSize: 11, color: COLORS.dim, minWidth: 32 }}>×{(rules.weights[k] * 100).toFixed(0)}%</span>
@@ -1564,6 +1628,38 @@ export default function App() {
                     )}
                     {sel.prevScores?.[k] != null && typeof v === "number" && <div style={{ fontSize: 12, color: COLORS.dim, marginBottom: 12 }}>Last week: {sel.prevScores[k].toFixed(1)} → this week: {v.toFixed(1)} <Delta v={v - sel.prevScores[k]} /></div>}
 
+                    {/* SUB-COMPONENT MATH — one row per lever, equation visible, overridable */}
+                    {(() => {
+                      const cd0 = sel.claudeScan?.clusters?.[k];
+                      const qItems = cd0 && Array.isArray(cd0.items) && cd0.items.some(it => typeof it.weight === "number" || it.bonus) ? cd0.items : null;
+                      if (!qItems) return null;
+                      return (
+                        <div style={{ marginBottom: 14, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "150px 1fr 130px 90px 60px", gap: 10, padding: "9px 14px", fontSize: 11, color: COLORS.dim, fontWeight: 600, borderBottom: `1px solid ${COLORS.border}` }}>
+                            <span>Sub-component</span><span>Inputs & equation</span><span>Rule applied</span><span>Score /5</span><span>Weight</span>
+                          </div>
+                          {qItems.map((it, ii) => {
+                            const ov = sel.itemOv?.[k]?.[it.name];
+                            return (
+                              <div key={ii} style={{ display: "grid", gridTemplateColumns: "150px 1fr 130px 90px 60px", gap: 10, padding: "11px 14px", fontSize: 12.5, alignItems: "center", borderTop: ii > 0 ? `1px solid ${COLORS.border}` : "none" }}>
+                                <span style={{ fontWeight: 600 }}>{it.name}</span>
+                                <span style={{ color: COLORS.dim, fontFamily: "monospace", fontSize: 11.5 }}>{it.input || "—"}</span>
+                                <span style={{ color: COLORS.dim, fontSize: 11.5 }}>{it.rule || "—"}</span>
+                                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                  <input type="number" step="0.1" min="0" max="5" placeholder={typeof it.score === "number" ? it.score.toFixed(1) : "—"} defaultValue={typeof ov === "number" ? ov : ""} key={`${sel.ticker}-${k}-${it.name}-${ov ?? "x"}`} onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }} onBlur={e => setItemOverride(sel.ticker, k, it.name, e.target.value)} title="Type to override — blank restores Claude's score" style={{ width: 56, background: COLORS.bg, color: typeof ov === "number" ? COLORS.yellow : scoreColor(typeof it.score === "number" ? it.score : null), border: `1px solid ${typeof ov === "number" ? COLORS.yellow : COLORS.border}`, borderRadius: 7, padding: "4px 7px", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit" }} />
+                                  {typeof ov === "number" && <span title="Claude's score" style={{ fontSize: 10.5, color: COLORS.dim, textDecoration: "line-through" }}>{it.score}</span>}
+                                </span>
+                                <span style={{ color: COLORS.dim, fontSize: 11.5 }}>{it.bonus ? "bonus" : typeof it.weight === "number" ? `${(it.weight * 100).toFixed(0)}%` : "—"}</span>
+                              </div>
+                            );
+                          })}
+                          <div style={{ padding: "9px 14px", fontSize: 12, color: COLORS.dim, borderTop: `1px solid ${COLORS.border}`, background: COLORS.bg }}>
+                            Cluster score = weighted average of rows + bonuses = <b style={{ color: scoreColor(sel.calc.computedScores[k]) }}>{typeof sel.calc.computedScores[k] === "number" ? sel.calc.computedScores[k].toFixed(2) : "—"}</b>{sel.itemOv?.[k] && Object.keys(sel.itemOv[k]).length ? " · your overrides applied" : ""} — edit any score cell; blank restores Claude's.
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* CLAUDE'S DOSSIER — facts, reasoning, watch items from the last scan */}
                     {sel.claudeScan?.clusters?.[k] && (() => {
                       const cd = sel.claudeScan.clusters[k];
@@ -1592,6 +1688,13 @@ export default function App() {
                             <div>
                               <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.dim, letterSpacing: 1, marginBottom: 4 }}>WATCH ITEMS</div>
                               {cd.watch.map((w, wi) => <div key={wi} style={{ fontSize: 12, color: COLORS.gold, padding: "3px 0", lineHeight: 1.45 }}>👁 {w}</div>)}
+                            </div>
+                          )}
+                          {Array.isArray(sel.claudeScan.clusters[k].sources) && sel.claudeScan.clusters[k].sources.length > 0 && (
+                            <div style={{ marginTop: 10, display: "flex", gap: 7, flexWrap: "wrap" }}>
+                              {sel.claudeScan.clusters[k].sources.map((sc, si) => sc && sc.url ? (
+                                <a key={si} href={sc.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11.5, color: COLORS.blue, border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: "3px 11px", textDecoration: "none" }}>{sc.label || sc.url.replace(/^https?:\/\/(www\.)?/, "").slice(0, 34)} ↗</a>
+                              ) : null)}
                             </div>
                           )}
                         </div>
@@ -1650,10 +1753,17 @@ export default function App() {
                         </div>
                       </div>
                     )}
-                    {k === "C" && sel.calc.knockouts.length > 0 && (
-                      <div style={{ marginTop: 12, padding: 12, background: "rgba(232,92,92,0.1)", border: `1px solid ${COLORS.red}`, borderRadius: 10 }}>
-                        <div style={{ fontWeight: 800, color: COLORS.red, fontSize: 12, marginBottom: 4 }}>⛔ Active knockouts</div>
-                        {sel.calc.knockouts.map((ko, i) => <div key={i} style={{ fontSize: 12 }}><b>{ko.name}</b> — {ko.rule}</div>)}
+                    {k === "C" && (sel.claudeScan?.vetoes?.checks?.length > 0 || sel.calc.knockouts.length > 0) && (
+                      <div style={{ marginTop: 12, border: `1px solid ${sel.calc.knockouts.length ? COLORS.red : COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+                        <div style={{ padding: "9px 14px", fontWeight: 700, fontSize: 12, color: sel.calc.knockouts.length ? COLORS.red : COLORS.text, borderBottom: `1px solid ${COLORS.border}` }}>⛔ Hard vetoes — each checked against your thresholds{sel.claudeScan ? ` (scan ${sel.claudeScan.date})` : ""}</div>
+                        {Array.isArray(sel.claudeScan?.vetoes?.checks) && sel.claudeScan.vetoes.checks.length > 0 ? sel.claudeScan.vetoes.checks.map((c, i) => (
+                          <div key={i} style={{ display: "grid", gridTemplateColumns: "170px 1fr 140px 60px", gap: 10, padding: "9px 14px", fontSize: 12.5, alignItems: "center", borderTop: i > 0 ? `1px solid ${COLORS.border}` : "none" }}>
+                            <span style={{ fontWeight: 600 }}>{c.name}</span>
+                            <span style={{ color: COLORS.dim, fontFamily: "monospace", fontSize: 11.5 }}>{c.value ?? "—"}</span>
+                            <span style={{ color: COLORS.dim, fontSize: 11.5 }}>{c.threshold ?? ""}</span>
+                            <span style={{ fontWeight: 700, color: c.pass ? COLORS.green : COLORS.red }}>{c.pass ? "pass" : "FAIL"}</span>
+                          </div>
+                        )) : sel.calc.knockouts.map((ko, i) => <div key={i} style={{ padding: "9px 14px", fontSize: 12, borderTop: i > 0 ? `1px solid ${COLORS.border}` : "none" }}><b style={{ color: COLORS.red }}>{ko.name}</b> — {ko.rule}</div>)}
                       </div>
                     )}
 
@@ -1671,8 +1781,8 @@ export default function App() {
                   </div>
 
                   <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 18, marginTop: 14 }}>
-                    <div style={{ fontWeight: 800, marginBottom: 10, fontSize: 13 }}>📜 {sel.ticker} — Decision & Override Trail</div>
-                    {(sel.decisions || []).length === 0 && (sel.overrides || []).length === 0 && <div style={{ fontSize: 12, color: COLORS.dim }}>No decisions logged yet.</div>}
+                    <div style={{ fontWeight: 800, marginBottom: 10, fontSize: 13 }}>📜 {sel.ticker} — Your call log — every verdict you stamp and every override, with date, price and reason</div>
+                    {(sel.decisions || []).length === 0 && (sel.overrides || []).length === 0 && <div style={{ fontSize: 12, color: COLORS.dim }}>Empty until you stamp a verdict or log an override on this stock — then each one lands here with the price on that day, so you can audit your own judgment later.</div>}
                     {(sel.overrides || []).map((o, i) => <div key={`o${i}`} style={{ fontSize: 12, padding: "6px 0", borderBottom: `1px solid ${COLORS.border}` }}><span style={{ color: COLORS.yellow, fontWeight: 700 }}>OVERRIDE</span> <span style={{ color: COLORS.dim }}>{o.date}</span> — "{o.signal}" — <i>{o.reason}</i></div>)}
                     {(sel.decisions || []).map((d, i) => <div key={`d${i}`} style={{ fontSize: 12, padding: "6px 0", borderBottom: `1px solid ${COLORS.border}` }}><span style={{ color: COLORS.blue, fontWeight: 700 }}>{d.action.toUpperCase()}</span> <span style={{ color: COLORS.dim }}>{d.date}</span> — <i>{d.reason}</i></div>)}
                   </div>
